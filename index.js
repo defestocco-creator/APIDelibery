@@ -1,104 +1,64 @@
-const express = require("express");
-const cors = require("cors");
-const admin = require("firebase-admin");
+import express from "express";
+import cors from "cors";
+import dotenv from "dotenv";
+dotenv.config();
+
+import { initializeApp } from "firebase/app";
+import { getDatabase, ref, push } from "firebase/database";
+
+// 🔐 Configurações privadas vindas do Render (.env)
+const firebaseConfig = {
+  apiKey: process.env.FIREBASE_APIKEY,
+  authDomain: process.env.FIREBASE_AUTHDOMAIN,
+  databaseURL: process.env.FIREBASE_DATABASE,
+  projectId: process.env.FIREBASE_PROJECTID,
+  storageBucket: process.env.FIREBASE_STORAGE,
+  messagingSenderId: process.env.FIREBASE_MSGID,
+  appId: process.env.FIREBASE_APPID,
+  measurementId: process.env.FIREBASE_MEASURE
+};
+
+// Inicializa Firebase (seguro — sem expor chaves)
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getDatabase(firebaseApp);
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-/**
- * Carrega as credenciais do Firebase
- * (armazenadas em variável de ambiente no Render)
- */
-const serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
-
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  databaseURL: process.env.FIREBASE_DB_URL
-});
-
-const db = admin.firestore();
-
-
-// ===============================
-//      RECEBER PEDIDO
-// ===============================
-app.post("/api/pedidos", async (req, res) => {
+// 👉 Rota para registrar pedidos
+app.post("/pedido", async (req, res) => {
   try {
-    const {
-      id,
-      cliente,
-      valor,
-      taxa,
-      forma_pagamento,
-      itens,
-      endereco,
-      observacao,
-      horario,
-      status,
-      tipo
-    } = req.body;
+    const pedido = req.body;
 
-    if (!id) {
-      return res.status(400).json({ error: "Campo 'id' é obrigatório." });
+    if (!pedido.nome || !pedido.valor || !pedido.forma_pagamento) {
+      return res.status(400).json({
+        status: "erro",
+        message: "Campos obrigatórios ausentes"
+      });
     }
 
-    const pedido = {
-      id,
-      cliente,
-      valor,
-      taxa,
-      forma_pagamento,
-      itens,
-      endereco,
-      observacao,
-      horario,
-      status: status || "em produção",
-      tipo,
-      criado_em: new Date().toISOString()
-    };
+    const pedidosRef = ref(db, "pedidos");
+    const novoPedido = await push(pedidosRef, pedido);
 
-    await db.collection("pedidos").doc(id).set(pedido);
-
-    res.json({ status: "ok", message: "Pedido registrado com sucesso." });
+    res.json({
+      status: "OK",
+      message: "Pedido registrado com sucesso!",
+      id: novoPedido.key,
+      pedido
+    });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: "Erro ao processar pedido." });
+    console.error("Erro ao registrar pedido:", error);
+    res.status(500).json({
+      status: "erro",
+      message: "Erro interno no servidor"
+    });
   }
 });
 
+// Porta dinâmica exigida pelo Render
+const PORT = process.env.PORT || 3000;
 
-// ===============================
-//     LISTAR TODOS PEDIDOS
-// ===============================
-app.get("/api/pedidos", async (req, res) => {
-  try {
-    const snapshot = await db.collection("pedidos").get();
-    const pedidos = snapshot.docs.map(doc => doc.data());
-    res.json(pedidos);
-  } catch (error) {
-    res.status(500).json({ error: "Erro ao buscar pedidos." });
-  }
+app.listen(PORT, () => {
+  console.log(`API rodando na porta ${PORT}`);
 });
-
-
-// ===============================
-//     ATUALIZAR STATUS
-// ===============================
-app.patch("/api/pedidos/:id", async (req, res) => {
-  try {
-    await db.collection("pedidos").doc(req.params.id).update(req.body);
-    res.json({ status: "ok" });
-  } catch (error) {
-    res.status(500).json({ error: "Erro ao atualizar pedido." });
-  }
-});
-
-
-app.get("/", (req, res) => {
-  res.send("API do Delivery funcionando 🚀");
-});
-
-
-const port = process.env.PORT || 3000;
-app.listen(port, () => console.log("Servidor iniciado na porta " + port));
