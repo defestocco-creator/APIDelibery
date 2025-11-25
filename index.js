@@ -1,11 +1,11 @@
-// index.js - API Pedidos v0.2
+// index.js - API Pedidos v0.3
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 dotenv.config();
 
 import db from "./firebase.js";
-import { ref, push, get } from "firebase/database";
+import { ref, push, get, set } from "firebase/database";
 
 const app = express();
 app.use(cors());
@@ -24,34 +24,86 @@ function pastaDoDia() {
 app.get("/", (req, res) => {
   res.send({
     ok: true,
-    message: "API Pedidos v0.2 rodando — Firebase Realtime",
+    message: "API Pedidos v0.3 rodando — Firebase Realtime",
     pastaHoje: pastaDoDia(),
     timestamp: new Date().toISOString(),
   });
 });
 
 /* ---------------------------------------------------------
-   🔥 Criar pedido manual
+   🔥 Criar pedido manual (versão 0.3)
 --------------------------------------------------------- */
 app.post("/pedido", async (req, res) => {
   try {
     const pasta = pastaDoDia();
-    const pedido = req.body;
 
-    // Garantir que sempre tenha status e id únicos
-    pedido.status = pedido.status || "pendente";
-    if (!pedido.id) {
-      pedido.id = Date.now().toString(); // gera ID usando timestamp
-    }
+    const {
+      numeroPedido,
+      cliente,
+      endereco,
+      estimatedDeliveryMinutes,
+      motoboy,
+      motoboyId,
+      pagamento,
+      taxa,
+      telefone,
+      valor_total,
+      status,
+      pedidoItens
+    } = req.body;
 
-    const novoRef = await push(ref(db, pasta), pedido);
+    // ----------------------------
+    // ✔ Validações v0.3
+    // ----------------------------
+
+    // numeroPedido é obrigatório e deve ser inteiro
+    if (numeroPedido === undefined || numeroPedido === null)
+      return res.status(400).json({ erro: "numeroPedido é obrigatório" });
+
+    if (isNaN(parseInt(numeroPedido)))
+      return res.status(400).json({ erro: "numeroPedido deve ser um número inteiro" });
+
+    // pedidoItens deve ser um array JSON
+    if (!pedidoItens || !Array.isArray(pedidoItens))
+      return res.status(400).json({ erro: "pedidoItens deve ser um array JSON" });
+
+    // Criar referência no Firebase
+    const novoRef = push(ref(db, pasta));
+
+    const novoPedido = {
+      id: novoRef.key, // ID gerado pelo Firebase
+
+      numeroPedido: parseInt(numeroPedido), // número sequencial do AnotaAi
+
+      cliente: cliente || "Cliente",
+      endereco: endereco || {},
+      estimatedDeliveryMinutes: estimatedDeliveryMinutes || 0,
+
+      motoboy: motoboy || {},
+      motoboyId: motoboyId || null,
+
+      pagamento: pagamento || "Outros",
+      taxa: taxa || 0,
+      telefone: telefone || "-",
+      valor_total: valor_total || 0,
+
+      status: status || "pendente",
+
+      pedidoItens, // JSON dos itens do pedido
+
+      criadoEm: Date.now()
+    };
+
+    // grava no Firebase
+    await set(novoRef, novoPedido);
 
     res.status(201).json({
       ok: true,
       firebase_id: novoRef.key,
       pasta,
-      pedido,
+      pedido: novoPedido,
     });
+
   } catch (err) {
     console.error("POST /pedido error:", err);
     res.status(500).json({ erro: err.message });
@@ -79,7 +131,6 @@ app.get("/pedidos/:data", async (req, res) => {
   try {
     const data = req.params.data; // formato DDMMAAAA
     const pasta = `PEDIDOS_MANUAIS_${data}`;
-
     const snapshot = await get(ref(db, pasta));
     res.json(snapshot.exists() ? snapshot.val() : {});
   } catch (err) {
@@ -91,5 +142,5 @@ app.get("/pedidos/:data", async (req, res) => {
 // Porta Render
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`API Pedidos v0.2 rodando na porta ${PORT}`);
+  console.log(`API Pedidos v0.3 rodando na porta ${PORT}`);
 });
