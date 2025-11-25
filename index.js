@@ -1,6 +1,11 @@
 /**
  * index.js - API Pedidos (Sessão + Firebase Realtime DB) - v0.2
- *
+ * 
+ * Modificações da v0.2:
+ * - Pedidos são salvos em "PEDIDOS_MANUAIS_DDMMAAAA" onde DDMMAAAA é a data atual
+ * - Cria automaticamente a chave do dia se não existir
+ * - Mantém compatibilidade com a estrutura existente do Firebase
+ * 
  * Uso:
  * 1) Coloque suas variáveis de ambiente (ex: .env):
  *    - SESSION_SECRET
@@ -27,10 +32,7 @@
  * POST  /pedido/:id/items     -> adiciona item ao pedido (auth)
  * GET   /pedidos              -> lista pedidos (auth) (suporta filtros via query)
  * GET   /pedidos/search       -> busca específica: ?field=nome&value=João (auth)
- *
- * Observação:
- * - O Firebase Realtime Database será acessado via SDK v9 modular.
- * - Sessões são salvas no Redis (connect-redis). Se não tiver Redis, instale e rode ou adapte o store.
+ * GET   /pedidos/hoje         -> lista apenas pedidos do dia atual (auth)
  */
 
 import express from "express";
@@ -133,7 +135,20 @@ app.use(
 
 // ------------------ Helpers ------------------
 
-const pedidosRef = ref(db, "pedidos"); // raiz "pedidos"
+// Função para obter a chave do dia atual no formato PEDIDOS_MANUAIS_DDMMAAAA
+function getChavePedidosDoDia() {
+  const now = new Date();
+  const dia = String(now.getDate()).padStart(2, '0');
+  const mes = String(now.getMonth() + 1).padStart(2, '0');
+  const ano = now.getFullYear();
+  return `PEDIDOS_MANUAIS_${dia}${mes}${ano}`;
+}
+
+// Referência para os pedidos do dia atual
+function getPedidosDoDiaRef() {
+  const chaveDia = getChavePedidosDoDia();
+  return ref(db, chaveDia);
+}
 
 // Formata resposta de erro
 const errJson = (res, status, msg) => res.status(status).json({ error: msg });
@@ -195,16 +210,23 @@ app.post("/pedido", auth, async (req, res) => {
     const validationError = validarPedido(pedido);
     if (validationError) return errJson(res, 400, validationError);
 
-    // adiciona timestamps
+    // adiciona timestamps e data
     pedido.createdAt = new Date().toISOString();
     pedido.createdBy = req.session.user?.usuario || null;
+    pedido.dataPedido = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
 
-    // push cria key única
-    const newRef = await push(pedidosRef);
+    // push cria key única dentro da chave do dia
+    const pedidosDiaRef = getPedidosDoDiaRef();
+    const newRef = await push(pedidosDiaRef);
     await set(newRef, pedido);
 
     const id = newRef.key;
-    return res.json({ message: "Pedido criado", id, pedido });
+    return res.json({ 
+      message: "Pedido criado", 
+      id, 
+      pedido,
+      chaveDia: getChavePedidosDoDia()
+    });
   } catch (err) {
     console.error(err);
     return errJson(res, 500, "Erro ao criar pedido");
@@ -217,7 +239,8 @@ app.get("/pedido/:id", auth, async (req, res) => {
     const { id } = req.params;
     if (!id) return errJson(res, 400, "ID obrigatório");
 
-    const snap = await get(child(pedidosRef, id));
+    const pedidosDiaRef = getPedidosDoDiaRef();
+    const snap = await get(child(pedidosDiaRef, id));
     if (!snap.exists()) return errJson(res, 404, "Pedido não encontrado");
 
     return res.json({ id, pedido: snap.val() });
@@ -239,8 +262,9 @@ app.put("/pedido/:id", auth, async (req, res) => {
     updates.updatedAt = new Date().toISOString();
     updates.updatedBy = req.session.user?.usuario || null;
 
-    await update(child(pedidosRef, id), updates);
-    const snap = await get(child(pedidosRef, id));
+    const pedidosDiaRef = getPedidosDoDiaRef();
+    await update(child(pedidosDiaRef, id), updates);
+    const snap = await get(child(pedidosDiaRef, id));
     return res.json({ message: "Pedido atualizado", id, pedido: snap.exists() ? snap.val() : null });
   } catch (err) {
     console.error(err);
@@ -254,10 +278,11 @@ app.delete("/pedido/:id", auth, async (req, res) => {
     const { id } = req.params;
     if (!id) return errJson(res, 400, "ID obrigatório");
 
-    const snap = await get(child(pedidosRef, id));
+    const pedidosDiaRef = getPedidosDoDiaRef();
+    const snap = await get(child(pedidosDiaRef, id));
     if (!snap.exists()) return errJson(res, 404, "Pedido não encontrado");
 
-    await remove(child(pedidosRef, id));
+    await remove(child(pedidosDiaRef, id));
     return res.json({ message: "Pedido removido", id });
   } catch (err) {
     console.error(err);
@@ -273,7 +298,8 @@ app.post("/pedido/:id/items", auth, async (req, res) => {
     if (!id) return errJson(res, 400, "ID obrigatório");
     if (!item || !item.produto) return errJson(res, 400, "Item inválido");
 
-    const snap = await get(child(pedidosRef, id));
+    const pedidosDiaRef = getPedidosDoDiaRef();
+    const snap = await get(child(pedidosDiaRef, id));
     if (!snap.exists()) return errJson(res, 404, "Pedido não encontrado");
 
     const pedidoAtual = snap.val();
@@ -281,7 +307,7 @@ app.post("/pedido/:id/items", auth, async (req, res) => {
     pedidoAtual.itens.push(item);
     pedidoAtual.updatedAt = new Date().toISOString();
 
-    await set(child(pedidosRef, id), pedidoAtual);
+    await set(child(pedidosDiaRef, id), pedidoAtual);
     return res.json({ message: "Item adicionado", id, pedido: pedidoAtual });
   } catch (err) {
     console.error(err);
@@ -303,11 +329,13 @@ app.get("/pedidos", auth, async (req, res) => {
     const page = parseInt(queryParams.page) || 1;
     const limit = parseInt(queryParams.limit) || 100;
 
+    const pedidosDiaRef = getPedidosDoDiaRef();
+    
     // Se houver exatamente 1 campo para filtrar usando orderByChild + equalTo:
     if (filtroFields.length === 1) {
       const field = filtroFields[0];
       const value = queryParams[field];
-      const q = query(pedidosRef, orderByChild(field), equalTo(value));
+      const q = query(pedidosDiaRef, orderByChild(field), equalTo(value));
       const snap = await get(q);
       const result = [];
       snap.forEach(childSnap => {
@@ -317,7 +345,7 @@ app.get("/pedidos", auth, async (req, res) => {
     }
 
     // Caso sem filtros ou múltiplos filtros, pegamos todos e filtramos localmente
-    const snapAll = await get(pedidosRef);
+    const snapAll = await get(pedidosDiaRef);
     const list = [];
     if (snapAll.exists()) {
       snapAll.forEach(childSnap => {
@@ -344,10 +372,41 @@ app.get("/pedidos", auth, async (req, res) => {
     const total = filtered.length;
     const paged = filtered.slice((page-1)*limit, page*limit);
 
-    return res.json({ total, page, limit, results: paged });
+    return res.json({ 
+      total, 
+      page, 
+      limit, 
+      results: paged,
+      chaveDia: getChavePedidosDoDia()
+    });
   } catch (err) {
     console.error(err);
     return errJson(res, 500, "Erro ao listar pedidos");
+  }
+});
+
+// Listar apenas pedidos do dia atual
+app.get("/pedidos/hoje", auth, async (req, res) => {
+  try {
+    const pedidosDiaRef = getPedidosDoDiaRef();
+    const snap = await get(pedidosDiaRef);
+    
+    const list = [];
+    if (snap.exists()) {
+      snap.forEach(childSnap => {
+        list.push({ id: childSnap.key, ...childSnap.val() });
+      });
+    }
+
+    return res.json({ 
+      total: list.length, 
+      results: list,
+      chaveDia: getChavePedidosDoDia(),
+      data: new Date().toISOString().split('T')[0]
+    });
+  } catch (err) {
+    console.error(err);
+    return errJson(res, 500, "Erro ao listar pedidos de hoje");
   }
 });
 
@@ -358,12 +417,17 @@ app.get("/pedidos/search", auth, async (req, res) => {
     const { field, value } = req.query;
     if (!field || !value) return errJson(res, 400, "Parâmetros 'field' e 'value' são necessários");
 
-    const q = query(pedidosRef, orderByChild(field), equalTo(value));
+    const pedidosDiaRef = getPedidosDoDiaRef();
+    const q = query(pedidosDiaRef, orderByChild(field), equalTo(value));
     const snap = await get(q);
     const result = [];
     snap.forEach(childSnap => result.push({ id: childSnap.key, ...childSnap.val() }));
 
-    return res.json({ count: result.length, results: result });
+    return res.json({ 
+      count: result.length, 
+      results: result,
+      chaveDia: getChavePedidosDoDia()
+    });
   } catch (err) {
     console.error(err);
     return errJson(res, 500, "Erro na busca específica");
@@ -372,10 +436,14 @@ app.get("/pedidos/search", auth, async (req, res) => {
 
 // Healthcheck
 app.get("/", (req, res) => {
-  res.json({ message: "API Pedidos (sessão + Firebase) v0.2 rodando" });
+  res.json({ 
+    message: "API Pedidos (sessão + Firebase) v0.2 rodando",
+    chaveDiaAtual: getChavePedidosDoDia()
+  });
 });
 
 // Start
 app.listen(PORT, () => {
   console.log(`API rodando na porta ${PORT}`);
+  console.log(`Chave do dia atual: ${getChavePedidosDoDia()}`);
 });
