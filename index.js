@@ -58,7 +58,6 @@ import {
 dotenv.config();
 
 const {
-  SESSION_SECRET = "troque_isso_em_producao",
   REDIS_URL,
   FIREBASE_APIKEY,
   FIREBASE_AUTHDOMAIN,
@@ -120,7 +119,7 @@ app.use(
 app.use(
   session({
     store: new RedisStore({ client: redisClient }),
-    secret: SESSION_SECRET,
+    secret: process.env.SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
     cookie: {
