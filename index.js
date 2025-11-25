@@ -89,52 +89,59 @@ const db = getDatabase(firebaseApp);
 
 // --- Inicia Redis e store de sessão ---
 // --- Inicia Redis e store de sessão ---
+// --- Inicia Redis e store de sessão ---
 let redisClient;
-try {
-  if (REDIS_URL) {
+
+// Se não tiver Redis, use MemoryStore (apenas para desenvolvimento)
+if (!REDIS_URL) {
+  console.warn("⚠️  REDIS_URL não definida - usando MemoryStore (NÃO use em produção)");
+  
+  app.use(
+    session({
+      secret: process.env.SESSION_SECRET,
+      resave: false,
+      saveUninitialized: false,
+      cookie: {
+        httpOnly: true,
+        secure: false,
+        sameSite: "lax",
+        maxAge: 1000 * 60 * 60
+      }
+    })
+  );
+} else {
+  try {
     redisClient = new IORedis(REDIS_URL);
-  } else {
-    // Tenta localhost caso REDIS_URL não esteja definido
-    redisClient = new IORedis();
+    redisClient.on("error", (err) => {
+      console.error("Redis error:", err);
+    });
+
+    const RedisStore = connectRedis(session);
+    
+    app.use(
+      session({
+        store: new RedisStore({ 
+          client: redisClient,
+          prefix: "sess:"
+        }),
+        secret: process.env.SESSION_SECRET,
+        resave: false,
+        saveUninitialized: false,
+        cookie: {
+          httpOnly: true,
+          secure: false,
+          sameSite: "lax",
+          maxAge: 1000 * 60 * 60
+        }
+      })
+    );
+    
+    console.log("✅ Redis conectado");
+  } catch (err) {
+    console.error("❌ Erro ao conectar no Redis:", err);
+    process.exit(1);
   }
-  redisClient.on("error", (err) => {
-    console.error("Redis error:", err);
-  });
-} catch (err) {
-  console.error("Erro ao conectar no Redis:", err);
 }
-
-// --- App Express ---
-const app = express();
-app.use(express.json());
-
-// CORS (ajuste conforme necessidade)
-app.use(
-  cors({
-    origin: true,
-    credentials: true
-  })
-);
-
-// Sessão - CORREÇÃO PARA connect-redis v7+
-const RedisStore = connectRedis(session);
-app.use(
-  session({
-    store: new RedisStore({ 
-      client: redisClient,
-      prefix: "sess:"
-    }),
-    secret: process.env.SESSION_SECRET,
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      secure: false, // true em produção com HTTPS
-      sameSite: "lax",
-      maxAge: 1000 * 60 * 60 // 1 hora
-    }
-  })
-);
 
 // ------------------ Helpers ------------------
 
