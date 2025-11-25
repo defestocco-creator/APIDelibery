@@ -1,17 +1,63 @@
-// index.js - API Pedidos v0.3
+// index.js — API Pedidos v0.4 (com JWT)
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 dotenv.config();
 
+import jwt from "jsonwebtoken";
+
 import db from "./firebase.js";
-import { ref, push, get, set } from "firebase/database";
+import { ref, push, get } from "firebase/database";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Função para gerar nome da pasta no padrão DDMMAAAA
+/* ============================================================
+    JWT – Autenticação
+============================================================ */
+
+// Middleware de proteção
+function checkJWT(req, res, next) {
+  const header = req.headers.authorization;
+
+  if (!header) {
+    return res.status(401).json({ erro: "Token não enviado" });
+  }
+
+  const token = header.replace("Bearer ", "");
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded; // dados do usuário liberado
+    next();
+  } catch (err) {
+    return res.status(401).json({ erro: "Token inválido ou expirado" });
+  }
+}
+
+// Rota de login (gera token JWT)
+app.post("/login", (req, res) => {
+  const { usuario, senha } = req.body;
+
+  // Por enquanto simples — futuramente podemos ligar ao Firebase Auth
+  if (usuario !== process.env.API_USER || senha !== process.env.API_PASS) {
+    return res.status(401).json({ erro: "Usuário ou senha incorretos" });
+  }
+
+  const token = jwt.sign(
+    { usuario },                 // payload
+    process.env.JWT_SECRET,      // chave secreta
+    { expiresIn: "10h" }         // tempo de expiração
+  );
+
+  res.json({ ok: true, token });
+});
+
+/* ============================================================
+    Funções Gerais
+============================================================ */
+
 function pastaDoDia() {
   const hoje = new Date();
   const dd = String(hoje.getDate()).padStart(2, "0");
@@ -20,100 +66,67 @@ function pastaDoDia() {
   return `PEDIDOS_MANUAIS_${dd}${mm}${yyyy}`;
 }
 
-// Health-check
+/* ============================================================
+    Health-Check
+============================================================ */
+
 app.get("/", (req, res) => {
   res.send({
     ok: true,
-    message: "API Pedidos v0.3 rodando — Firebase Realtime",
+    message: "API Pedidos v0.4 rodando — JWT + Firebase",
     pastaHoje: pastaDoDia(),
     timestamp: new Date().toISOString(),
   });
 });
 
-/* ---------------------------------------------------------
-   🔥 Criar pedido manual (versão 0.3)
---------------------------------------------------------- */
-app.post("/pedido", async (req, res) => {
+/* ============================================================
+    Criar Pedido Manual (PROTEGIDO)
+============================================================ */
+
+app.post("/pedido", checkJWT, async (req, res) => {
   try {
     const pasta = pastaDoDia();
+    const pedido = req.body;
 
-    const {
-      numeroPedido,
-      cliente,
-      endereco,
-      estimatedDeliveryMinutes,
-      motoboy,
-      motoboyId,
-      pagamento,
-      taxa,
-      telefone,
-      valor_total,
-      status,
-      pedidoItens
-    } = req.body;
+    // 🔹 numeroPedido agora é obrigatório e inteiro
+    if (!pedido.numeroPedido || typeof pedido.numeroPedido !== "number") {
+      return res.status(400).json({
+        erro: "numeroPedido é obrigatório e deve ser um número inteiro.",
+      });
+    }
 
-    // ----------------------------
-    // ✔ Validações v0.3
-    // ----------------------------
+    // 🔹 pedidoItens deve ser um JSON
+    if (!pedido.pedidoItens || typeof pedido.pedidoItens !== "object") {
+      return res.status(400).json({
+        erro: "pedidoItens deve ser um JSON contendo os itens do pedido.",
+      });
+    }
 
-    // numeroPedido é obrigatório e deve ser inteiro
-    if (numeroPedido === undefined || numeroPedido === null)
-      return res.status(400).json({ erro: "numeroPedido é obrigatório" });
+    // 🔹 garantir status padrão
+    pedido.status = pedido.status || "pendente";
 
-    if (isNaN(parseInt(numeroPedido)))
-      return res.status(400).json({ erro: "numeroPedido deve ser um número inteiro" });
+    // 🔹 garantir ID único se não informado
+    pedido.id = pedido.id || Date.now().toString();
 
-    // pedidoItens deve ser um array JSON
-    if (!pedidoItens || !Array.isArray(pedidoItens))
-      return res.status(400).json({ erro: "pedidoItens deve ser um array JSON" });
-
-    // Criar referência no Firebase
-    const novoRef = push(ref(db, pasta));
-
-    const novoPedido = {
-      id: novoRef.key, // ID gerado pelo Firebase
-
-      numeroPedido: parseInt(numeroPedido), // número sequencial do AnotaAi
-
-      cliente: cliente || "Cliente",
-      endereco: endereco || {},
-      estimatedDeliveryMinutes: estimatedDeliveryMinutes || 0,
-
-      motoboy: motoboy || {},
-      motoboyId: motoboyId || null,
-
-      pagamento: pagamento || "Outros",
-      taxa: taxa || 0,
-      telefone: telefone || "-",
-      valor_total: valor_total || 0,
-
-      status: status || "pendente",
-
-      pedidoItens, // JSON dos itens do pedido
-
-      criadoEm: Date.now()
-    };
-
-    // grava no Firebase
-    await set(novoRef, novoPedido);
+    const novoRef = await push(ref(db, pasta), pedido);
 
     res.status(201).json({
       ok: true,
       firebase_id: novoRef.key,
       pasta,
-      pedido: novoPedido,
+      pedido,
     });
-
   } catch (err) {
     console.error("POST /pedido error:", err);
     res.status(500).json({ erro: err.message });
   }
 });
 
-/* ---------------------------------------------------------
-   🗂️ Listar pedidos do dia
---------------------------------------------------------- */
-app.get("/pedidos", async (req, res) => {
+/* ============================================================
+    Listar Pedidos do Dia (PROTEGIDO)
+============================================================ */
+
+app.get("/pedidos", checkJWT, async (req, res) => {
   try {
     const pasta = pastaDoDia();
     const snapshot = await get(ref(db, pasta));
@@ -124,13 +137,15 @@ app.get("/pedidos", async (req, res) => {
   }
 });
 
-/* ---------------------------------------------------------
-   🗂️ Listar pedidos de uma data específica (DDMMAAAA)
---------------------------------------------------------- */
-app.get("/pedidos/:data", async (req, res) => {
+/* ============================================================
+    Listar Pedidos por Data (PROTEGIDO)
+============================================================ */
+
+app.get("/pedidos/:data", checkJWT, async (req, res) => {
   try {
     const data = req.params.data; // formato DDMMAAAA
     const pasta = `PEDIDOS_MANUAIS_${data}`;
+
     const snapshot = await get(ref(db, pasta));
     res.json(snapshot.exists() ? snapshot.val() : {});
   } catch (err) {
@@ -139,8 +154,11 @@ app.get("/pedidos/:data", async (req, res) => {
   }
 });
 
-// Porta Render
+/* ============================================================
+    Porta Render
+============================================================ */
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`API Pedidos v0.3 rodando na porta ${PORT}`);
+  console.log(`API Pedidos v0.4 rodando na porta ${PORT}`);
 });
