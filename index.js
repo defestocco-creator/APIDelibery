@@ -1,53 +1,95 @@
+// index.js - API Pedidos v0.2
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 dotenv.config();
 
 import db from "./firebase.js";
-import { ref, push, get, update, remove } from "firebase/database";
+import { ref, push, get } from "firebase/database";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ➤ Criar item
-app.post("/itens", async (req, res) => {
+// Função para gerar nome da pasta no padrão DDMMAAAA
+function pastaDoDia() {
+  const hoje = new Date();
+  const dd = String(hoje.getDate()).padStart(2, "0");
+  const mm = String(hoje.getMonth() + 1).padStart(2, "0");
+  const yyyy = hoje.getFullYear();
+  return `PEDIDOS_MANUAIS_${dd}${mm}${yyyy}`;
+}
+
+// Health-check
+app.get("/", (req, res) => {
+  res.send({
+    ok: true,
+    message: "API Pedidos v0.2 rodando — Firebase Realtime",
+    pastaHoje: pastaDoDia(),
+    timestamp: new Date().toISOString(),
+  });
+});
+
+/* ---------------------------------------------------------
+   🔥 Criar pedido manual
+--------------------------------------------------------- */
+app.post("/pedido", async (req, res) => {
   try {
-    const novoItem = await push(ref(db, "itens"), req.body);
-    res.json({ id: novoItem.key, ...req.body });
-  } catch (e) {
-    res.status(500).json({ erro: e.message });
+    const pasta = pastaDoDia();
+    const pedido = req.body;
+
+    // Garantir que sempre tenha status e id únicos
+    pedido.status = pedido.status || "pendente";
+    if (!pedido.id) {
+      pedido.id = Date.now().toString(); // gera ID usando timestamp
+    }
+
+    const novoRef = await push(ref(db, pasta), pedido);
+
+    res.status(201).json({
+      ok: true,
+      firebase_id: novoRef.key,
+      pasta,
+      pedido,
+    });
+  } catch (err) {
+    console.error("POST /pedido error:", err);
+    res.status(500).json({ erro: err.message });
   }
 });
 
-// ➤ Listar itens
-app.get("/itens", async (req, res) => {
+/* ---------------------------------------------------------
+   🗂️ Listar pedidos do dia
+--------------------------------------------------------- */
+app.get("/pedidos", async (req, res) => {
   try {
-    const snapshot = await get(ref(db, "itens"));
+    const pasta = pastaDoDia();
+    const snapshot = await get(ref(db, pasta));
     res.json(snapshot.exists() ? snapshot.val() : {});
-  } catch (e) {
-    res.status(500).json({ erro: e.message });
+  } catch (err) {
+    console.error("GET /pedidos error:", err);
+    res.status(500).json({ erro: err.message });
   }
 });
 
-// ➤ Editar item
-app.put("/itens/:id", async (req, res) => {
+/* ---------------------------------------------------------
+   🗂️ Listar pedidos de uma data específica (DDMMAAAA)
+--------------------------------------------------------- */
+app.get("/pedidos/:data", async (req, res) => {
   try {
-    await update(ref(db, "itens/" + req.params.id), req.body);
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ erro: e.message });
+    const data = req.params.data; // formato DDMMAAAA
+    const pasta = `PEDIDOS_MANUAIS_${data}`;
+
+    const snapshot = await get(ref(db, pasta));
+    res.json(snapshot.exists() ? snapshot.val() : {});
+  } catch (err) {
+    console.error("GET /pedidos/:data error:", err);
+    res.status(500).json({ erro: err.message });
   }
 });
 
-// ➤ Deletar item
-app.delete("/itens/:id", async (req, res) => {
-  try {
-    await remove(ref(db, "itens/" + req.params.id));
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ erro: e.message });
-  }
+// Porta Render
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`API Pedidos v0.2 rodando na porta ${PORT}`);
 });
-
-app.listen(3000, () => console.log("API rodando em http://localhost:3000"));
