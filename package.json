@@ -1,16 +1,21 @@
 {
-  "name": "api-delibery",
-  "version": "1.0.0",
-  "description": "API de pedidos (delivery) com Firebase + Render",
-  "main": "index.js",
+  "name": "api-pedidos-sessao-firebase-v0.2",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "dev": "nodemon index.js"
   },
   "dependencies": {
+    "connect-redis": "^7.2.0",
     "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
     "express": "^4.18.2",
-    "firebase": "^10.7.1"
+    "express-session": "^1.17.3",
+    "firebase": "^9.22.2",
+    "ioredis": "^5.3.2",
+    "dotenv": "^16.0.3"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.22"
   }
 }
