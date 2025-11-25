@@ -88,8 +88,7 @@ const firebaseApp = initializeApp(firebaseConfig);
 const db = getDatabase(firebaseApp);
 
 // --- Inicia Redis e store de sessão ---
-const RedisStore = connectRedis(session);
-
+// --- Inicia Redis e store de sessão ---
 let redisClient;
 try {
   if (REDIS_URL) {
@@ -117,10 +116,14 @@ app.use(
   })
 );
 
-// Sessão
+// Sessão - CORREÇÃO PARA connect-redis v7+
+const RedisStore = connectRedis(session);
 app.use(
   session({
-    store: new RedisStore({ client: redisClient }),
+    store: new RedisStore({ 
+      client: redisClient,
+      prefix: "sess:"
+    }),
     secret: process.env.SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
