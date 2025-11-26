@@ -86,35 +86,51 @@ app.get("/", (req, res) => {
 app.post("/pedido", checkJWT, async (req, res) => {
   try {
     const pasta = pastaDoDia();
-    const pedido = req.body;
+    const body = req.body;
 
-    // 🔹 numeroPedido agora é obrigatório e inteiro
-    if (!pedido.numeroPedido || typeof pedido.numeroPedido !== "number") {
-      return res.status(400).json({
-        erro: "numeroPedido é obrigatório e deve ser um número inteiro.",
-      });
+    // 🔹 Validações básicas
+    if (!body.cliente || typeof body.cliente !== "string") {
+      return res.status(400).json({ erro: "cliente é obrigatório e deve ser uma string." });
     }
 
-    // 🔹 pedidoItens deve ser um JSON
-    if (!pedido.pedidoItens || typeof pedido.pedidoItens !== "object") {
-      return res.status(400).json({
-        erro: "pedidoItens deve ser um JSON contendo os itens do pedido.",
-      });
+    if (!body.endereco || typeof body.endereco !== "object") {
+      return res.status(400).json({ erro: "endereco é obrigatório e deve ser um objeto." });
     }
 
-    // 🔹 garantir status padrão
-    pedido.status = pedido.status || "pendente";
+    // Endereço deve ter subcampos
+    const endereco = {
+      bairro: body.endereco.bairro || "",
+      numero: body.endereco.numero || "",
+      referencia: body.endereco.referencia || "",
+      rua: body.endereco.rua || ""
+    };
 
-    // 🔹 garantir ID único se não informado
-    pedido.id = pedido.id || Date.now().toString();
+    // Motoboy padrão se não informado
+    const motoboy = body.motoboy || { id: "", nome: "" };
 
+    // Criar pedido no formato exato
+    const pedido = {
+      cliente: body.cliente,
+      endereco,
+      estimatedDeliveryMinutes: body.estimatedDeliveryMinutes || 30,
+      id: body.id || Date.now().toString(),
+      motoboy,
+      pagamento: body.pagamento || "Outros",
+      status: body.status || "pendente",
+      taxa: body.taxa || 0,
+      telefone: body.telefone || "-",
+      valor_total: body.valor_total || 0
+    };
+
+    // Salvar no Firebase
     const novoRef = await push(ref(db, pasta), pedido);
 
+    // Resposta seguindo o mesmo formato
     res.status(201).json({
       ok: true,
       firebase_id: novoRef.key,
       pasta,
-      pedido,
+      pedido
     });
   } catch (err) {
     console.error("POST /pedido error:", err);
