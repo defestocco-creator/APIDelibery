@@ -104,9 +104,12 @@ app.post("/pedido", checkJWT, async (req, res) => {
       referencia: body.endereco.referencia || "",
       rua: body.endereco.rua || ""
     };
-
+      
     // Motoboy padrão se não informado
     const motoboy = body.motoboy || { id: "", nome: "" };
+
+    // Itens do pedido (novo campo) — espera um objeto JSON
+    const itens = body.itens || {};
 
     // Criar pedido no formato exato
     const pedido = {
@@ -119,7 +122,8 @@ app.post("/pedido", checkJWT, async (req, res) => {
       status: body.status || "pendente",
       taxa: body.taxa || 0,
       telefone: body.telefone || "-",
-      valor_total: body.valor_total || 0
+      valor_total: body.valor_total || 0,
+      itens // 🔹 Novo campo adicionado
     };
 
     // Salvar no Firebase
@@ -137,6 +141,7 @@ app.post("/pedido", checkJWT, async (req, res) => {
     res.status(500).json({ erro: err.message });
   }
 });
+
 
 /* ============================================================
     Listar Pedidos do Dia (PROTEGIDO)
