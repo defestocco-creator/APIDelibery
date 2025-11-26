@@ -116,7 +116,7 @@ app.post("/pedido", checkJWT, async (req, res) => {
       cliente: body.cliente,
       endereco,
       estimatedDeliveryMinutes: body.estimatedDeliveryMinutes || 30,
-      id: body.id || Date.now().toString(),
+      id: body.id || 250,
       tipoPedido: body.tipoPedido || "Entrega",
       motoboy,
       pagamento: body.pagamento || "Outros",
