@@ -1,20 +1,10 @@
- // index.js — API Pedidos v0.8 (JWT + Firebase + MongoDB Métricas + Auth Híbrida)
+// index.js — API Pedidos v1.0 (JWT + MongoDB Métricas)
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 dotenv.config();
 
 import jwt from "jsonwebtoken";
-import db from "./firebase.js";
-import { ref, push, get } from "firebase/database";
-
-// Firebase Admin (usado para autenticar usuários externos)
-import admin from "firebase-admin";
-import serviceAccount from "./firebaseAuth.json" assert { type: "json" };
-
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
 
 // MongoDB
 import { MongoClient } from "mongodb";
@@ -93,13 +83,20 @@ function checkJWT(req, res, next) {
 }
 
 /* ============================================================
-    LOGIN 1 — Login interno da API (painel administrativo)
+    LOGIN - Autenticação com JWT
 ============================================================ */
 
 app.post("/login", (req, res) => {
   const { usuario, senha } = req.body;
 
-  if (usuario !== process.env.API_USER || senha !== process.env.API_PASS) {
+  // Aqui você pode implementar sua lógica de autenticação
+  // Exemplo simples - substitua por sua lógica real
+  const usuariosValidos = {
+    "admin": "senha123",
+    "usuario": "123456"
+  };
+
+  if (!usuariosValidos[usuario] || usuariosValidos[usuario] !== senha) {
     return res.status(401).json({ erro: "Usuário ou senha incorretos" });
   }
 
@@ -110,33 +107,6 @@ app.post("/login", (req, res) => {
   );
 
   res.json({ ok: true, token });
-});
-
-/* ============================================================
-    LOGIN 2 — Login de Clientes via Firebase Auth
-============================================================ */
-
-app.post("/loginCliente", async (req, res) => {
-  const { idToken } = req.body;
-
-  try {
-    const decoded = await admin.auth().verifyIdToken(idToken);
-
-    const token = jwt.sign(
-      { uid: decoded.uid, email: decoded.email, type: "client" },
-      process.env.JWT_SECRET,
-      { expiresIn: "10h" }
-    );
-
-    res.json({
-      ok: true,
-      token,
-      clientId: decoded.uid
-    });
-
-  } catch (err) {
-    res.status(401).json({ erro: "Token inválido do Firebase", detalhe: err.message });
-  }
 });
 
 /* ============================================================
@@ -158,7 +128,7 @@ function pastaDoDia() {
 app.get("/", (req, res) => {
   res.json({
     ok: true,
-    api: "API Pedidos v0.8 — JWT + Firebase Auth + Firebase DB + Métricas MongoDB",
+    api: "API Pedidos v1.0 — JWT + Métricas MongoDB",
     pastaHoje: pastaDoDia(),
     timestamp: new Date().toISOString(),
   });
@@ -203,13 +173,13 @@ app.post("/pedido", checkJWT, async (req, res) => {
       itens: body.itens || {}
     };
 
-    const novoRef = await push(ref(db, pasta), pedido);
-
+    // Aqui você pode salvar em um banco de dados de sua escolha
+    // Por enquanto retornamos sucesso sem salvar no Firebase
     res.status(201).json({
       ok: true,
-      firebase_id: novoRef.key,
       pasta,
-      pedido
+      pedido,
+      mensagem: "Pedido criado com sucesso (sem Firebase)"
     });
 
   } catch (err) {
@@ -225,8 +195,12 @@ app.post("/pedido", checkJWT, async (req, res) => {
 app.get("/pedidos", checkJWT, async (req, res) => {
   try {
     const pasta = pastaDoDia();
-    const snapshot = await get(ref(db, pasta));
-    res.json(snapshot.exists() ? snapshot.val() : {});
+    // Retorna array vazio já que Firebase foi removido
+    res.json({ 
+      pasta,
+      mensagem: "Funcionalidade de pedidos disponível - implemente seu banco de dados",
+      pedidos: []
+    });
   } catch (err) {
     res.status(500).json({ erro: err.message });
   }
@@ -240,9 +214,9 @@ app.get("/metricas", checkJWT, async (req, res) => {
   try {
     let filtro = {};
 
-    // se o usuário for cliente (login via Firebase)
+    // se o usuário for cliente
     if (req.user.type === "client") {
-      filtro.clientId = req.headers["x-client"]; // uid do cliente
+      filtro.clientId = req.headers["x-client"];
     }
 
     const docs = await metricsCollection
@@ -263,4 +237,4 @@ app.get("/metricas", checkJWT, async (req, res) => {
 ============================================================ */
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`API v0.8 rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`API v1.0 rodando na porta ${PORT}`));
