@@ -1,4 +1,4 @@
-// index.js — API Pedidos v0.8 (JWT + Firebase + MongoDB Métricas + Auth Híbrida)
+ // index.js — API Pedidos v0.8 (JWT + Firebase + MongoDB Métricas + Auth Híbrida)
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
