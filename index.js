@@ -154,38 +154,6 @@ app.post("/login", async (req, res) => {
   }
 });
 
-app.post("/cadastro", async (req, res) => {
-  const { email, password } = req.body;
-
-  if (!email || !password) {
-    return res.status(400).json({ erro: "Email e senha são obrigatórios" });
-  }
-
-  try {
-    console.log(`👤 Tentando cadastro: ${email}`);
-    const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-    const user = userCredential.user;
-
-    const token = jwt.sign(
-      { uid: user.uid, email: user.email, type: "client" },
-      process.env.JWT_SECRET,
-      { expiresIn: "10h" }
-    );
-
-    console.log(`✅ Cadastro bem-sucedido: ${email}`);
-    res.status(201).json({
-      ok: true,
-      token,
-      clientId: user.uid,
-      email: user.email,
-      message: "Usuário criado com sucesso"
-    });
-
-  } catch (err) {
-    console.error("❌ Erro cadastro:", err.code);
-    res.status(400).json({ erro: "Erro ao criar usuário", code: err.code });
-  }
-});
 
 // =========================================================
 //   ROTA PARA DEBUG DAS MÉTRICAS
