@@ -1,4 +1,4 @@
-// index.js — API Pedidos v0.5 (JWT + Firebase + MongoDB Métricas)
+// index.js — API Pedidos v0.8 (JWT + Firebase + MongoDB Métricas + Auth Híbrida)
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -7,6 +7,14 @@ dotenv.config();
 import jwt from "jsonwebtoken";
 import db from "./firebase.js";
 import { ref, push, get } from "firebase/database";
+
+// Firebase Admin (usado para autenticar usuários externos)
+import admin from "firebase-admin";
+import serviceAccount from "./firebaseAuth.json" assert { type: "json" };
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
 
 // MongoDB
 import { MongoClient } from "mongodb";
@@ -34,13 +42,14 @@ connectMongo();
 // =========================================================
 async function metricas(req, res, next) {
   const inicio = Date.now();
+  const clientId = req.headers["x-client"] || "desconhecido";
 
   res.on("finish", async () => {
     try {
       if (!metricsCollection) return;
 
       await metricsCollection.insertOne({
-        clientId: req.headers["x-client"] || "desconhecido",
+        clientId,
         method: req.method,
         endpoint: req.originalUrl,
         status: res.statusCode,
@@ -62,7 +71,7 @@ app.use(express.json());
 app.use(metricas); // captura tudo automaticamente
 
 /* ============================================================
-    JWT – Autenticação
+    JWT – Autenticação API
 ============================================================ */
 
 function checkJWT(req, res, next) {
@@ -83,7 +92,10 @@ function checkJWT(req, res, next) {
   }
 }
 
-// Login
+/* ============================================================
+    LOGIN 1 — Login interno da API (painel administrativo)
+============================================================ */
+
 app.post("/login", (req, res) => {
   const { usuario, senha } = req.body;
 
@@ -92,12 +104,39 @@ app.post("/login", (req, res) => {
   }
 
   const token = jwt.sign(
-    { usuario },
+    { usuario, type: "internal" },
     process.env.JWT_SECRET,
     { expiresIn: "10h" }
   );
 
   res.json({ ok: true, token });
+});
+
+/* ============================================================
+    LOGIN 2 — Login de Clientes via Firebase Auth
+============================================================ */
+
+app.post("/loginCliente", async (req, res) => {
+  const { idToken } = req.body;
+
+  try {
+    const decoded = await admin.auth().verifyIdToken(idToken);
+
+    const token = jwt.sign(
+      { uid: decoded.uid, email: decoded.email, type: "client" },
+      process.env.JWT_SECRET,
+      { expiresIn: "10h" }
+    );
+
+    res.json({
+      ok: true,
+      token,
+      clientId: decoded.uid
+    });
+
+  } catch (err) {
+    res.status(401).json({ erro: "Token inválido do Firebase", detalhe: err.message });
+  }
 });
 
 /* ============================================================
@@ -119,7 +158,7 @@ function pastaDoDia() {
 app.get("/", (req, res) => {
   res.json({
     ok: true,
-    api: "API Pedidos v0.5 — JWT + Firebase + MongoDB Métricas",
+    api: "API Pedidos v0.8 — JWT + Firebase Auth + Firebase DB + Métricas MongoDB",
     pastaHoje: pastaDoDia(),
     timestamp: new Date().toISOString(),
   });
@@ -194,18 +233,26 @@ app.get("/pedidos", checkJWT, async (req, res) => {
 });
 
 /* ============================================================
-    Métricas (PÚBLICO ou protegido — você decide)
+    Métricas – filtradas automaticamente por cliente
 ============================================================ */
 
-app.get("/metricas", async (req, res) => {
+app.get("/metricas", checkJWT, async (req, res) => {
   try {
+    let filtro = {};
+
+    // se o usuário for cliente (login via Firebase)
+    if (req.user.type === "client") {
+      filtro.clientId = req.headers["x-client"]; // uid do cliente
+    }
+
     const docs = await metricsCollection
-      .find({})
+      .find(filtro)
       .sort({ timestamp: -1 })
       .limit(200)
       .toArray();
 
     res.json(docs);
+
   } catch (err) {
     res.status(500).json({ erro: err.message });
   }
@@ -216,4 +263,4 @@ app.get("/metricas", async (req, res) => {
 ============================================================ */
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`API v0.5 rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`API v0.8 rodando na porta ${PORT}`));
