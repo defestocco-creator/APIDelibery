@@ -1,4 +1,4 @@
-// index.js — API Pedidos v2.3 (MÉTRICAS GARANTIDAS)
+// index.js — API Pedidos v2.4 (MÉTRICAS FILTRADAS POR CLIENT ID)
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -12,7 +12,7 @@ import { getDatabase, ref, push, get } from "firebase/database";
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword } from "firebase/auth";
 
 // MongoDB
-import { MongoClient } from "mongodb";
+import { MongoClient, ObjectId } from "mongodb";
 
 // =========================================================
 //   Configurações
@@ -52,17 +52,17 @@ app.use(cors());
 app.use(express.json());
 
 // =========================================================
-//   MIDDLEWARE DE MÉTRICAS CORRIGIDO E GARANTIDO
+//   MIDDLEWARE DE MÉTRICAS CORRIGIDO
 // =========================================================
 app.use((req, res, next) => {
   const start = Date.now();
-  const clientId = req.headers["x-client"] || req.ip || "unknown";
+  let clientId = req.headers["x-client"] || req.ip || "unknown";
 
-  // Função para SALVAR MÉTRICA (garantida)
+  // Função para SALVAR MÉTRICA
   const saveMetric = async () => {
     try {
       if (!metricsCollection) {
-        console.log("⚠️  MongoDB não conectado, métrica perdida");
+        console.log("⚠️  MongoDB não conectado");
         return;
       }
 
@@ -74,13 +74,11 @@ app.use((req, res, next) => {
         timeMs: Date.now() - start,
         ip: req.ip,
         userAgent: req.get('User-Agent') || 'unknown',
-        timestamp: new Date(),
-        bodySize: req.headers['content-length'] || 0
+        timestamp: new Date()
       };
 
-      console.log(`📊 MÉTRICA REGISTRADA: ${req.method} ${req.originalUrl} → ${res.statusCode} (${metric.timeMs}ms)`);
+      console.log(`📊 MÉTRICA: ${req.method} ${req.originalUrl} → ${res.statusCode} | Client: ${clientId}`);
       
-      // INSERIR NO MONGODB
       await metricsCollection.insertOne(metric);
       
     } catch (error) {
@@ -88,10 +86,7 @@ app.use((req, res, next) => {
     }
   };
 
-  // ✅ GARANTIR que a métrica seja salva quando a response terminar
   res.on('finish', saveMetric);
-  
-  // ✅ GARANTIR que a métrica seja salva se a conexão fechar
   res.on('close', saveMetric);
 
   next();
@@ -109,8 +104,8 @@ function checkJWT(req, res, next) {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     req.user = decoded;
     
-    // Adicionar clientId para métricas
-    if (decoded.uid && !req.headers["x-client"]) {
+    // ✅ DEFINIR clientId NO HEADER para o middleware usar
+    if (decoded.uid) {
       req.headers["x-client"] = decoded.uid;
     }
     
@@ -140,8 +135,8 @@ app.post("/login", async (req, res) => {
       { expiresIn: "10h" }
     );
 
-    // ✅ ADICIONAR header x-client para métricas
-    res.setHeader('x-client', user.uid);
+    // ✅ DEFINIR header x-client para métricas
+    req.headers["x-client"] = user.uid;
     
     res.json({ 
       ok: true, 
@@ -172,8 +167,8 @@ app.post("/cadastro", async (req, res) => {
       { expiresIn: "10h" }
     );
 
-    // ✅ ADICIONAR header x-client para métricas
-    res.setHeader('x-client', user.uid);
+    // ✅ DEFINIR header x-client para métricas
+    req.headers["x-client"] = user.uid;
     
     res.status(201).json({
       ok: true,
@@ -189,31 +184,34 @@ app.post("/cadastro", async (req, res) => {
 });
 
 // =========================================================
-//   ROTA ESPECIAL PARA TESTAR MÉTRICAS
+//   ROTA ESPECIAL PARA VER TODAS AS MÉTRICAS (DEBUG)
 // =========================================================
-app.get("/teste-metricas", (req, res) => {
-  console.log("🧪 ROTA DE TESTE DE MÉTRICAS ACESSADA");
-  res.json({
-    message: "Esta rota DEVE gerar uma métrica!",
-    timestamp: new Date().toISOString(),
-    clientIp: req.ip
-  });
-});
-
-app.get("/debug-mongo", async (req, res) => {
+app.get("/debug-metricas-completas", checkJWT, async (req, res) => {
   try {
-    const status = {
-      mongoConnected: !!metricsCollection,
-      database: "metricas_api",
-      collection: "metricas"
-    };
+    const todasMetricas = await metricsCollection.find({}).sort({ timestamp: -1 }).limit(50).toArray();
+    
+    console.log(`🔍 DEBUG: ${todasMetricas.length} métricas no total`);
+    
+    // Métricas do usuário atual
+    const minhasMetricas = todasMetricas.filter(m => m.clientId === req.user.uid);
+    
+    res.json({
+      usuario_atual: {
+        uid: req.user.uid,
+        email: req.user.email
+      },
+      total_metricas: todasMetricas.length,
+      minhas_metricas: minhasMetricas.length,
+      todas_as_metricas: todasMetricas.map(m => ({
+        clientId: m.clientId,
+        method: m.method,
+        endpoint: m.endpoint,
+        status: m.status,
+        timeMs: m.timeMs,
+        timestamp: m.timestamp
+      }))
+    });
 
-    if (metricsCollection) {
-      status.totalDocuments = await metricsCollection.countDocuments();
-      status.collections = await mongoClient.db("metricas_api").listCollections().toArray();
-    }
-
-    res.json(status);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -225,8 +223,8 @@ app.get("/debug-mongo", async (req, res) => {
 app.get("/", (req, res) => {
   res.json({
     ok: true,
-    api: "API Pedidos v2.3 — MÉTRICAS GARANTIDAS ✅",
-    message: "Todas as requisições geram métricas automaticamente",
+    api: "API Pedidos v2.4 — MÉTRICAS FILTRADAS POR CLIENT ID ✅",
+    message: "Cada usuário vê apenas suas próprias métricas",
     timestamp: new Date().toISOString()
   });
 });
@@ -255,14 +253,11 @@ app.post("/pedido", checkJWT, async (req, res) => {
       telefone: req.body.telefone || "-",
       valor_total: req.body.valor_total || 0,
       itens,
-      criadoPor: req.user.uid || req.user.usuario,
+      criadoPor: req.user.uid,
       criadoEm: new Date().toISOString()
     };
 
     const novoRef = await push(ref(db, pasta), pedido);
-    
-    // ✅ ADICIONAR header x-client para métricas
-    res.setHeader('x-client', req.user.uid || req.user.usuario);
     
     res.status(201).json({ 
       ok: true, 
@@ -281,10 +276,6 @@ app.get("/pedidos", checkJWT, async (req, res) => {
   try {
     const pasta = pastaDoDia();
     const snapshot = await get(ref(db, pasta));
-    
-    // ✅ ADICIONAR header x-client para métricas
-    res.setHeader('x-client', req.user.uid || req.user.usuario);
-    
     res.json(snapshot.exists() ? snapshot.val() : {});
 
   } catch (err) {
@@ -292,22 +283,26 @@ app.get("/pedidos", checkJWT, async (req, res) => {
   }
 });
 
+// =========================================================
+//   ROTA MÉTRICAS CORRIGIDA - FILTRAR POR CLIENT ID
+// =========================================================
 app.get("/metricas", checkJWT, async (req, res) => {
   try {
-    let filtro = {};
-    if (req.user.uid) filtro.clientId = req.user.uid;
-
-    const docs = await metricsCollection.find(filtro).sort({ timestamp: -1 }).limit(100).toArray();
+    const userUid = req.user.uid;
     
-    console.log(`📊 Retornando ${docs.length} métricas para o cliente`);
+    console.log(`📊 Buscando métricas para: ${userUid}`);
     
-    // ✅ ADICIONAR header x-client para métricas
-    res.setHeader('x-client', req.user.uid || req.user.usuario);
+    // ✅ FILTRAR APENAS AS MÉTRICAS DESTE USUÁRIO
+    const minhasMetricas = await metricsCollection.find({ 
+      clientId: userUid 
+    }).sort({ timestamp: -1 }).limit(100).toArray();
     
-    res.json(docs);
+    console.log(`📊 Encontradas ${minhasMetricas.length} métricas para ${userUid}`);
+    
+    res.json(minhasMetricas);
 
   } catch (err) {
-    console.error("❌ Erro métricas:", err);
+    console.error("❌ Erro ao buscar métricas:", err);
     res.status(500).json({ erro: err.message });
   }
 });
@@ -317,8 +312,7 @@ app.get("/metricas", checkJWT, async (req, res) => {
 // =========================================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 API v2.3 rodando na porta ${PORT}`);
-  console.log(`📊 SISTEMA DE MÉTRICAS: ATIVO E GARANTIDO ✅`);
+  console.log(`🚀 API v2.4 rodando na porta ${PORT}`);
+  console.log(`📊 MÉTRICAS: FILTRADAS POR CLIENT ID ✅`);
   console.log(`🔐 Firebase Auth: ATIVO`);
-  console.log(`🗄️  MongoDB: ${metricsCollection ? 'CONECTADO' : 'DESCONECTADO'}`);
 });
