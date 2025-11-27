@@ -9,6 +9,9 @@ import jwt from "jsonwebtoken";
 
 import db from "./firebase.js";
 import { ref, push, get } from "firebase/database";
+import { metricas } from "./metrics.js";
+
+app.use(metricas);  // 🔥 captura tudo automaticamente
 
 const app = express();
 app.use(cors());
