@@ -1,4 +1,4 @@
-// index.js — API Pedidos v1.0 (Firebase Auth + JWT + MongoDB Métricas)
+// index.js — API Pedidos v2.0 (Firebase Auth + JWT + MongoDB Métricas)
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -7,12 +7,29 @@ dotenv.config();
 import jwt from "jsonwebtoken";
 
 // Firebase
-import { db, auth } from "./firebase.js";
-import { ref, push, get } from "firebase/database";
-import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from "firebase/auth";
+import { initializeApp } from "firebase/app";
+import { getDatabase, ref, push, get } from "firebase/database";
+import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword } from "firebase/auth";
 
 // MongoDB
 import { MongoClient } from "mongodb";
+
+// =========================================================
+//   Firebase Config
+// =========================================================
+const firebaseConfig = {
+  apiKey: process.env.FIREBASE_APIKEY,
+  authDomain: process.env.FIREBASE_AUTHDOMAIN,
+  databaseURL: process.env.FIREBASE_DATABASE,
+  projectId: process.env.FIREBASE_PROJECTID,
+  storageBucket: process.env.FIREBASE_STORAGE,
+  messagingSenderId: process.env.FIREBASE_MESSAGING,
+  appId: process.env.FIREBASE_APPID,
+};
+
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getDatabase(firebaseApp);
+const auth = getAuth(firebaseApp);
 
 // =========================================================
 //   MongoDB – Conexão
@@ -195,6 +212,32 @@ app.post("/cadastro", async (req, res) => {
 });
 
 /* ============================================================
+    LOGIN ANTIGO (Compatibilidade) - REMOVA DEPOIS
+============================================================ */
+
+app.post("/login-antigo", (req, res) => {
+  const { usuario, senha } = req.body;
+
+  // Credenciais temporárias para teste
+  const usuariosValidos = {
+    "admin": "senha123",
+    "usuario": "123456"
+  };
+
+  if (!usuariosValidos[usuario] || usuariosValidos[usuario] !== senha) {
+    return res.status(401).json({ erro: "Usuário ou senha incorretos" });
+  }
+
+  const token = jwt.sign(
+    { usuario, type: "internal" },
+    process.env.JWT_SECRET,
+    { expiresIn: "10h" }
+  );
+
+  res.json({ ok: true, token });
+});
+
+/* ============================================================
     Funções Gerais
 ============================================================ */
 
@@ -213,9 +256,17 @@ function pastaDoDia() {
 app.get("/", (req, res) => {
   res.json({
     ok: true,
-    api: "API Pedidos v1.0 — Firebase Auth + JWT + MongoDB Métricas",
+    api: "API Pedidos v2.0 — Firebase Auth + JWT + MongoDB Métricas",
     pastaHoje: pastaDoDia(),
     timestamp: new Date().toISOString(),
+    rotas: {
+      login: "POST /login (Firebase)",
+      cadastro: "POST /cadastro (Firebase)", 
+      login_antigo: "POST /login-antigo",
+      pedido: "POST /pedido",
+      pedidos: "GET /pedidos",
+      metricas: "GET /metricas"
+    }
   });
 });
 
@@ -256,7 +307,7 @@ app.post("/pedido", checkJWT, async (req, res) => {
       telefone: body.telefone || "-",
       valor_total: body.valor_total || 0,
       itens: body.itens || {},
-      criadoPor: req.user.uid,
+      criadoPor: req.user.uid || req.user.usuario,
       criadoEm: new Date().toISOString()
     };
 
@@ -302,7 +353,7 @@ app.get("/metricas", checkJWT, async (req, res) => {
   try {
     let filtro = {};
 
-    if (req.user.type === "client") {
+    if (req.user.type === "client" && req.user.uid) {
       filtro.clientId = req.user.uid;
     }
 
@@ -324,4 +375,4 @@ app.get("/metricas", checkJWT, async (req, res) => {
 ============================================================ */
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`API v1.0 Firebase Auth rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 API v2.0 Firebase Auth rodando na porta ${PORT}`));
