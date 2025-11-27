@@ -1,26 +1,36 @@
-import db from "./firebase.js";
+// metrics.js — captura métricas automáticas
 import { ref, push } from "firebase/database";
+import db from "./firebase.js";
+
+// Função para gerar pasta do dia
+function pastaMetricas() {
+  const hoje = new Date();
+  const dd = String(hoje.getDate()).padStart(2, "0");
+  const mm = String(hoje.getMonth() + 1).padStart(2, "0");
+  const yyyy = hoje.getFullYear();
+  return `METRICAS_${dd}${mm}${yyyy}`;
+}
 
 export function metricas(req, res, next) {
   const inicio = Date.now();
 
-  // Aguardar a resposta terminar
   res.on("finish", async () => {
-    const tempo = Date.now() - inicio;
+    const duracao = Date.now() - inicio;
 
-    const log = {
+    const registro = {
       rota: req.originalUrl,
       metodo: req.method,
       status: res.statusCode,
-      tempo_ms: tempo,
-      usuario: req.user?.usuario || "desconhecido",
-      data: new Date().toISOString()
+      tempo_ms: duracao,
+      timestamp: new Date().toISOString(),
+      usuario: req.user?.usuario || "não autenticado"
     };
 
-    // Salvar em pasta diária no Firebase
-    const pasta = "METRICAS_" + new Date().toISOString().slice(0,10).replace(/-/g,"");
-
-    await push(ref(db, pasta), log);
+    try {
+      await push(ref(db, pastaMetricas()), registro);
+    } catch (err) {
+      console.error("Erro ao salvar métrica:", err.message);
+    }
   });
 
   next();
