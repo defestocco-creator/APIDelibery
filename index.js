@@ -1,4 +1,4 @@
-// index.js — API Pedidos v2.1 (Firebase Auth CORRETO + JWT)
+// index.js — API Pedidos v2.2 (Métricas CORRETAS + Firebase Auth)
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -6,7 +6,7 @@ dotenv.config();
 
 import jwt from "jsonwebtoken";
 
-// Firebase CLIENT SDK (para autenticação)
+// Firebase
 import { initializeApp } from "firebase/app";
 import { getDatabase, ref, push, get } from "firebase/database";
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword } from "firebase/auth";
@@ -15,7 +15,7 @@ import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword } f
 import { MongoClient } from "mongodb";
 
 // =========================================================
-//   Firebase Config (CLIENT SDK)
+//   Firebase Config
 // =========================================================
 const firebaseConfig = {
   apiKey: process.env.FIREBASE_APIKEY,
@@ -27,17 +27,12 @@ const firebaseConfig = {
   appId: process.env.FIREBASE_APPID,
 };
 
-console.log("🔥 Firebase Config:", {
-  projectId: firebaseConfig.projectId,
-  authDomain: firebaseConfig.authDomain
-});
-
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getDatabase(firebaseApp);
 const auth = getAuth(firebaseApp);
 
 // =========================================================
-//   MongoDB
+//   MongoDB – Conexão
 // =========================================================
 const mongoClient = new MongoClient(process.env.MONGO_URL);
 let metricsCollection = null;
@@ -47,44 +42,63 @@ async function connectMongo() {
     await mongoClient.connect();
     const dbMongo = mongoClient.db("metricas_api");
     metricsCollection = dbMongo.collection("metricas");
-    console.log("✅ MongoDB conectado");
+    console.log("✅ MongoDB conectado — Métricas ativas");
   } catch (err) {
-    console.error("❌ Erro MongoDB:", err);
+    console.error("❌ Erro ao conectar ao MongoDB:", err);
   }
 }
 connectMongo();
 
 // =========================================================
-//   App Express
+//   MIDDLEWARE DE MÉTRICAS CORRIGIDO
 // =========================================================
+function metricasMiddleware(req, res, next) {
+  const inicio = Date.now();
+  const clientId = req.headers["x-client"] || req.ip || "desconhecido";
+
+  // Função para salvar métricas
+  const salvarMetrica = async () => {
+    try {
+      if (!metricsCollection) {
+        console.log("❌ MetricsCollection não disponível");
+        return;
+      }
+
+      const metrica = {
+        clientId: clientId,
+        method: req.method,
+        endpoint: req.originalUrl,
+        status: res.statusCode,
+        timeMs: Date.now() - inicio,
+        ip: req.ip,
+        userAgent: req.get('User-Agent') || 'desconhecido',
+        timestamp: new Date()
+      };
+
+      console.log(`📊 Métrica registrada: ${req.method} ${req.originalUrl} - ${res.statusCode} - ${metrica.timeMs}ms`);
+      
+      await metricsCollection.insertOne(metrica);
+      
+    } catch (err) {
+      console.error("❌ Erro ao salvar métrica:", err.message);
+    }
+  };
+
+  // Salva quando a response terminar
+  res.on('finish', salvarMetrica);
+  
+  // Também salva em caso de erro
+  res.on('close', salvarMetrica);
+
+  next();
+}
+
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Middleware de Métricas
-async function metricas(req, res, next) {
-  const inicio = Date.now();
-  const clientId = req.headers["x-client"] || "desconhecido";
-
-  res.on("finish", async () => {
-    try {
-      if (metricsCollection) {
-        await metricsCollection.insertOne({
-          clientId,
-          method: req.method,
-          endpoint: req.originalUrl,
-          status: res.statusCode,
-          timeMs: Date.now() - inicio,
-          timestamp: new Date()
-        });
-      }
-    } catch (err) {
-      console.error("Erro métricas:", err);
-    }
-  });
-  next();
-}
-app.use(metricas);
+// ✅ MIDDLEWARE DE MÉTRICAS DEVE VIR ANTES DAS ROTAS
+app.use(metricasMiddleware);
 
 // =========================================================
 //   JWT Middleware
@@ -97,9 +111,12 @@ function checkJWT(req, res, next) {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     req.user = decoded;
+    
+    // Adiciona header x-client para métricas
     if (decoded.uid && !req.headers["x-client"]) {
       req.headers["x-client"] = decoded.uid;
     }
+    
     next();
   } catch (err) {
     return res.status(401).json({ erro: "Token inválido" });
@@ -110,7 +127,6 @@ function checkJWT(req, res, next) {
 //   ROTAS FIREBASE AUTH
 // =========================================================
 
-// 🔥 LOGIN COM FIREBASE AUTH
 app.post("/login", async (req, res) => {
   const { email, password } = req.body;
   
@@ -133,19 +149,11 @@ app.post("/login", async (req, res) => {
     res.json({ ok: true, token, clientId: user.uid, email: user.email });
 
   } catch (err) {
-    console.error("❌ Erro login:", err.code, err.message);
-    
-    let erroMessage = "Erro ao fazer login";
-    if (err.code === 'auth/invalid-email') erroMessage = "Email inválido";
-    else if (err.code === 'auth/user-not-found') erroMessage = "Usuário não encontrado";
-    else if (err.code === 'auth/wrong-password') erroMessage = "Senha incorreta";
-    else if (err.code === 'auth/too-many-requests') erroMessage = "Muitas tentativas";
-
-    res.status(401).json({ erro: erroMessage, code: err.code });
+    console.error("❌ Erro login:", err.code);
+    res.status(401).json({ erro: "Erro ao fazer login", code: err.code });
   }
 });
 
-// 🔥 CADASTRO COM FIREBASE AUTH
 app.post("/cadastro", async (req, res) => {
   const { email, password } = req.body;
 
@@ -174,32 +182,47 @@ app.post("/cadastro", async (req, res) => {
     });
 
   } catch (err) {
-    console.error("❌ Erro cadastro:", err.code, err.message);
-    
-    let erroMessage = "Erro ao criar usuário";
-    if (err.code === 'auth/email-already-in-use') erroMessage = "Email já está em uso";
-    else if (err.code === 'auth/invalid-email') erroMessage = "Email inválido";
-    else if (err.code === 'auth/weak-password') erroMessage = "Senha muito fraca";
-
-    res.status(400).json({ erro: erroMessage, code: err.code });
+    console.error("❌ Erro cadastro:", err.code);
+    res.status(400).json({ erro: "Erro ao criar usuário", code: err.code });
   }
 });
 
 // =========================================================
-//   ROTAS COMPATIBILIDADE
+//   ROTA PARA DEBUG DAS MÉTRICAS
 // =========================================================
 
-// 🔐 LOGIN ANTIGO (para compatibilidade)
-app.post("/login-antigo", (req, res) => {
-  const { usuario, senha } = req.body;
-  const usuariosValidos = { "admin": "senha123", "usuario": "123456" };
-
-  if (!usuariosValidos[usuario] || usuariosValidos[usuario] !== senha) {
-    return res.status(401).json({ erro: "Usuário ou senha incorretos" });
+app.get("/debug-metricas", async (req, res) => {
+  try {
+    console.log("🔍 Debug das métricas solicitado");
+    
+    // Verificar status da conexão MongoDB
+    const mongoStatus = metricsCollection ? "Conectado" : "Desconectado";
+    
+    // Contar métricas existentes
+    const totalMetricas = metricsCollection ? await metricsCollection.countDocuments() : 0;
+    
+    // Últimas 10 métricas
+    const ultimasMetricas = metricsCollection ? 
+      await metricsCollection.find().sort({ timestamp: -1 }).limit(10).toArray() : [];
+    
+    res.json({
+      mongoStatus,
+      totalMetricas,
+      ultimasMetricas: ultimasMetricas.map(m => ({
+        method: m.method,
+        endpoint: m.endpoint,
+        status: m.status,
+        timeMs: m.timeMs,
+        clientId: m.clientId,
+        timestamp: m.timestamp
+      })),
+      mensagem: "Debug das métricas"
+    });
+    
+  } catch (err) {
+    console.error("❌ Erro no debug:", err);
+    res.status(500).json({ erro: err.message });
   }
-
-  const token = jwt.sign({ usuario, type: "internal" }, process.env.JWT_SECRET, { expiresIn: "10h" });
-  res.json({ ok: true, token });
 });
 
 // =========================================================
@@ -209,8 +232,9 @@ app.post("/login-antigo", (req, res) => {
 app.get("/", (req, res) => {
   res.json({
     ok: true,
-    api: "API Pedidos v2.1 — Firebase Auth CORRETO + JWT",
+    api: "API Pedidos v2.2 — Métricas ATIVAS + Firebase Auth",
     auth: "Firebase Client SDK",
+    metricas: "ATIVAS - Todas as requisições são registradas",
     timestamp: new Date().toISOString()
   });
 });
@@ -220,7 +244,6 @@ function pastaDoDia() {
   return `PEDIDOS_MANUAIS_${String(hoje.getDate()).padStart(2, "0")}${String(hoje.getMonth() + 1).padStart(2, "0")}${hoje.getFullYear()}`;
 }
 
-// 📦 CRIAR PEDIDO
 app.post("/pedido", checkJWT, async (req, res) => {
   try {
     const pasta = pastaDoDia();
@@ -253,7 +276,6 @@ app.post("/pedido", checkJWT, async (req, res) => {
   }
 });
 
-// 📋 LISTAR PEDIDOS
 app.get("/pedidos", checkJWT, async (req, res) => {
   try {
     const pasta = pastaDoDia();
@@ -264,15 +286,18 @@ app.get("/pedidos", checkJWT, async (req, res) => {
   }
 });
 
-// 📊 MÉTRICAS
 app.get("/metricas", checkJWT, async (req, res) => {
   try {
     let filtro = {};
     if (req.user.uid) filtro.clientId = req.user.uid;
     
-    const docs = await metricsCollection.find(filtro).sort({ timestamp: -1 }).limit(200).toArray();
+    const docs = await metricsCollection.find(filtro).sort({ timestamp: -1 }).limit(50).toArray();
+    
+    console.log(`📊 Métricas retornadas: ${docs.length} registros`);
+    
     res.json(docs);
   } catch (err) {
+    console.error("❌ Erro ao buscar métricas:", err);
     res.status(500).json({ erro: err.message });
   }
 });
@@ -281,4 +306,8 @@ app.get("/metricas", checkJWT, async (req, res) => {
 //   INICIAR SERVIDOR
 // =========================================================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 API v2.1 rodando na porta ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`🚀 API v2.2 rodando na porta ${PORT}`);
+  console.log(`📊 Sistema de métricas: ATIVO`);
+  console.log(`🔐 Firebase Auth: ATIVO`);
+});
