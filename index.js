@@ -1,10 +1,15 @@
-// index.js — API Pedidos v1.0 (JWT + MongoDB Métricas)
+// index.js — API Pedidos v1.0 (Firebase Auth + JWT + MongoDB Métricas)
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 dotenv.config();
 
 import jwt from "jsonwebtoken";
+
+// Firebase
+import { db, auth } from "./firebase.js";
+import { ref, push, get } from "firebase/database";
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from "firebase/auth";
 
 // MongoDB
 import { MongoClient } from "mongodb";
@@ -58,7 +63,7 @@ async function metricas(req, res, next) {
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use(metricas); // captura tudo automaticamente
+app.use(metricas);
 
 /* ============================================================
     JWT – Autenticação API
@@ -76,6 +81,12 @@ function checkJWT(req, res, next) {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     req.user = decoded;
+    
+    // Adiciona header x-client automaticamente
+    if (decoded.uid && !req.headers["x-client"]) {
+      req.headers["x-client"] = decoded.uid;
+    }
+    
     next();
   } catch (err) {
     return res.status(401).json({ erro: "Token inválido ou expirado" });
@@ -83,30 +94,104 @@ function checkJWT(req, res, next) {
 }
 
 /* ============================================================
-    LOGIN - Autenticação com JWT
+    LOGIN - Autenticação com Firebase Auth
 ============================================================ */
 
-app.post("/login", (req, res) => {
-  const { usuario, senha } = req.body;
+app.post("/login", async (req, res) => {
+  const { email, password } = req.body;
 
-  // Aqui você pode implementar sua lógica de autenticação
-  // Exemplo simples - substitua por sua lógica real
-  const usuariosValidos = {
-    "admin": "senha123",
-    "usuario": "123456"
-  };
-
-  if (!usuariosValidos[usuario] || usuariosValidos[usuario] !== senha) {
-    return res.status(401).json({ erro: "Usuário ou senha incorretos" });
+  if (!email || !password) {
+    return res.status(400).json({ erro: "Email e senha são obrigatórios" });
   }
 
-  const token = jwt.sign(
-    { usuario, type: "internal" },
-    process.env.JWT_SECRET,
-    { expiresIn: "10h" }
-  );
+  try {
+    const userCredential = await signInWithEmailAndPassword(auth, email, password);
+    const user = userCredential.user;
 
-  res.json({ ok: true, token });
+    // Gera o JWT token
+    const token = jwt.sign(
+      { 
+        uid: user.uid, 
+        email: user.email, 
+        type: "client" 
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: "10h" }
+    );
+
+    res.json({
+      ok: true,
+      token,
+      clientId: user.uid,
+      email: user.email
+    });
+
+  } catch (err) {
+    console.error("Login error:", err);
+    
+    let erroMessage = "Erro ao fazer login";
+    if (err.code === 'auth/invalid-email') {
+      erroMessage = "Email inválido";
+    } else if (err.code === 'auth/user-not-found') {
+      erroMessage = "Usuário não encontrado";
+    } else if (err.code === 'auth/wrong-password') {
+      erroMessage = "Senha incorreta";
+    } else if (err.code === 'auth/too-many-requests') {
+      erroMessage = "Muitas tentativas. Tente novamente mais tarde";
+    }
+
+    res.status(401).json({ erro: erroMessage, code: err.code });
+  }
+});
+
+/* ============================================================
+    CADASTRO - Criar usuário com Firebase Auth
+============================================================ */
+
+app.post("/cadastro", async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ erro: "Email e senha são obrigatórios" });
+  }
+
+  try {
+    const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+    const user = userCredential.user;
+
+    // Gera o JWT token
+    const token = jwt.sign(
+      { 
+        uid: user.uid, 
+        email: user.email, 
+        type: "client" 
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: "10h" }
+    );
+
+    res.status(201).json({
+      ok: true,
+      token,
+      clientId: user.uid,
+      email: user.email,
+      message: "Usuário criado com sucesso"
+    });
+
+  } catch (err) {
+    console.error("Cadastro error:", err);
+    
+    let erroMessage = "Erro ao criar usuário";
+    if (err.code === 'auth/email-already-in-use') {
+      erroMessage = "Email já está em uso";
+    } else if (err.code === 'auth/invalid-email') {
+      erroMessage = "Email inválido";
+    } else if (err.code === 'auth/weak-password') {
+      erroMessage = "Senha muito fraca (mínimo 6 caracteres)";
+    }
+
+    res.status(400).json({ erro: erroMessage, code: err.code });
+  }
 });
 
 /* ============================================================
@@ -128,7 +213,7 @@ function pastaDoDia() {
 app.get("/", (req, res) => {
   res.json({
     ok: true,
-    api: "API Pedidos v1.0 — JWT + Métricas MongoDB",
+    api: "API Pedidos v1.0 — Firebase Auth + JWT + MongoDB Métricas",
     pastaHoje: pastaDoDia(),
     timestamp: new Date().toISOString(),
   });
@@ -162,7 +247,7 @@ app.post("/pedido", checkJWT, async (req, res) => {
       cliente: body.cliente,
       endereco,
       estimatedDeliveryMinutes: body.estimatedDeliveryMinutes || 30,
-      id: body.id || 1000,
+      id: body.id || Date.now(),
       tipoPedido: body.tipoPedido || "Entrega",
       motoboy: body.motoboy || { id: "", nome: "" },
       pagamento: body.pagamento || "Outros",
@@ -170,16 +255,18 @@ app.post("/pedido", checkJWT, async (req, res) => {
       taxa: body.taxa || 0,
       telefone: body.telefone || "-",
       valor_total: body.valor_total || 0,
-      itens: body.itens || {}
+      itens: body.itens || {},
+      criadoPor: req.user.uid,
+      criadoEm: new Date().toISOString()
     };
 
-    // Aqui você pode salvar em um banco de dados de sua escolha
-    // Por enquanto retornamos sucesso sem salvar no Firebase
+    const novoRef = await push(ref(db, pasta), pedido);
+
     res.status(201).json({
       ok: true,
+      firebase_id: novoRef.key,
       pasta,
-      pedido,
-      mensagem: "Pedido criado com sucesso (sem Firebase)"
+      pedido
     });
 
   } catch (err) {
@@ -195,12 +282,13 @@ app.post("/pedido", checkJWT, async (req, res) => {
 app.get("/pedidos", checkJWT, async (req, res) => {
   try {
     const pasta = pastaDoDia();
-    // Retorna array vazio já que Firebase foi removido
-    res.json({ 
-      pasta,
-      mensagem: "Funcionalidade de pedidos disponível - implemente seu banco de dados",
-      pedidos: []
-    });
+    const snapshot = await get(ref(db, pasta));
+    
+    if (snapshot.exists()) {
+      res.json(snapshot.val());
+    } else {
+      res.json({});
+    }
   } catch (err) {
     res.status(500).json({ erro: err.message });
   }
@@ -214,9 +302,8 @@ app.get("/metricas", checkJWT, async (req, res) => {
   try {
     let filtro = {};
 
-    // se o usuário for cliente
     if (req.user.type === "client") {
-      filtro.clientId = req.headers["x-client"];
+      filtro.clientId = req.user.uid;
     }
 
     const docs = await metricsCollection
@@ -237,4 +324,4 @@ app.get("/metricas", checkJWT, async (req, res) => {
 ============================================================ */
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`API v1.0 rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`API v1.0 Firebase Auth rodando na porta ${PORT}`));
