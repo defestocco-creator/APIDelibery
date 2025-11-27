@@ -1,22 +1,65 @@
-// index.js — API Pedidos v0.5 (JWT + Métricas + Firebase)
+// index.js — API Pedidos v0.5 (JWT + Firebase + MongoDB Métricas)
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 dotenv.config();
 
 import jwt from "jsonwebtoken";
-
 import db from "./firebase.js";
 import { ref, push, get } from "firebase/database";
 
-import { metricas } from "./metrics.js"; // 🔥 captura tudo
+// MongoDB
+import { MongoClient } from "mongodb";
+
+// =========================================================
+//   MongoDB – Conexão
+// =========================================================
+const mongoClient = new MongoClient(process.env.MONGO_URL);
+let metricsCollection = null;
+
+async function connectMongo() {
+  try {
+    await mongoClient.connect();
+    const dbMongo = mongoClient.db("metricas_api");
+    metricsCollection = dbMongo.collection("metricas");
+    console.log("MongoDB conectado — coleção de métricas pronta");
+  } catch (err) {
+    console.error("Erro ao conectar ao MongoDB:", err);
+  }
+}
+connectMongo();
+
+// =========================================================
+//   Middleware de Métricas (LOG de Requisições)
+// =========================================================
+async function metricas(req, res, next) {
+  const inicio = Date.now();
+
+  res.on("finish", async () => {
+    try {
+      if (!metricsCollection) return;
+
+      await metricsCollection.insertOne({
+        clientId: req.headers["x-client"] || "desconhecido",
+        method: req.method,
+        endpoint: req.originalUrl,
+        status: res.statusCode,
+        timeMs: Date.now() - inicio,
+        ip: req.headers["x-forwarded-for"] || req.ip,
+        timestamp: new Date()
+      });
+    } catch (err) {
+      console.error("Erro ao salvar métrica:", err);
+    }
+  });
+
+  next();
+}
 
 const app = express();
-
-// Ordem correta:
 app.use(cors());
 app.use(express.json());
-app.use(metricas); // 🔥 captura latência de todas rotas
+app.use(metricas); // captura tudo automaticamente
 
 /* ============================================================
     JWT – Autenticação
@@ -40,6 +83,7 @@ function checkJWT(req, res, next) {
   }
 }
 
+// Login
 app.post("/login", (req, res) => {
   const { usuario, senha } = req.body;
 
@@ -57,7 +101,7 @@ app.post("/login", (req, res) => {
 });
 
 /* ============================================================
-    Função util
+    Funções Gerais
 ============================================================ */
 
 function pastaDoDia() {
@@ -69,20 +113,20 @@ function pastaDoDia() {
 }
 
 /* ============================================================
-    Health-check
+    Health-Check
 ============================================================ */
 
 app.get("/", (req, res) => {
-  res.send({
+  res.json({
     ok: true,
-    message: "API Pedidos v0.5 rodando — JWT + Firebase + Métricas",
+    api: "API Pedidos v0.5 — JWT + Firebase + MongoDB Métricas",
     pastaHoje: pastaDoDia(),
     timestamp: new Date().toISOString(),
   });
 });
 
 /* ============================================================
-    Criar Pedido (protegido)
+    Criar Pedido Manual (PROTEGIDO)
 ============================================================ */
 
 app.post("/pedido", checkJWT, async (req, res) => {
@@ -91,11 +135,11 @@ app.post("/pedido", checkJWT, async (req, res) => {
     const body = req.body;
 
     if (!body.cliente || typeof body.cliente !== "string") {
-      return res.status(400).json({ erro: "cliente é obrigatório" });
+      return res.status(400).json({ erro: "cliente é obrigatório e deve ser uma string." });
     }
 
     if (!body.endereco || typeof body.endereco !== "object") {
-      return res.status(400).json({ erro: "endereco inválido" });
+      return res.status(400).json({ erro: "endereco é obrigatório e deve ser um objeto." });
     }
 
     const endereco = {
@@ -109,7 +153,7 @@ app.post("/pedido", checkJWT, async (req, res) => {
       cliente: body.cliente,
       endereco,
       estimatedDeliveryMinutes: body.estimatedDeliveryMinutes || 30,
-      id: body.id || Date.now(),
+      id: body.id || 1000,
       tipoPedido: body.tipoPedido || "Entrega",
       motoboy: body.motoboy || { id: "", nome: "" },
       pagamento: body.pagamento || "Outros",
@@ -128,13 +172,15 @@ app.post("/pedido", checkJWT, async (req, res) => {
       pasta,
       pedido
     });
+
   } catch (err) {
+    console.error("POST /pedido error:", err);
     res.status(500).json({ erro: err.message });
   }
 });
 
 /* ============================================================
-    Listar pedidos do dia
+    Listar Pedidos do Dia (PROTEGIDO)
 ============================================================ */
 
 app.get("/pedidos", checkJWT, async (req, res) => {
@@ -148,43 +194,26 @@ app.get("/pedidos", checkJWT, async (req, res) => {
 });
 
 /* ============================================================
-    Pedidos por data
+    Métricas (PÚBLICO ou protegido — você decide)
 ============================================================ */
 
-app.get("/pedidos/:data", checkJWT, async (req, res) => {
+app.get("/metricas", async (req, res) => {
   try {
-    const pasta = `PEDIDOS_MANUAIS_${req.params.data}`;
-    const snapshot = await get(ref(db, pasta));
-    res.json(snapshot.exists() ? snapshot.val() : {});
+    const docs = await metricsCollection
+      .find({})
+      .sort({ timestamp: -1 })
+      .limit(200)
+      .toArray();
+
+    res.json(docs);
   } catch (err) {
     res.status(500).json({ erro: err.message });
   }
 });
 
 /* ============================================================
-    MÉTRICAS (PROTEGIDO)
-============================================================ */
-
-app.get("/metricas", checkJWT, async (req, res) => {
-  const hoje = new Date();
-  const dd = String(hoje.getDate()).padStart(2, "0");
-  const mm = String(hoje.getMonth() + 1).padStart(2, "0");
-  const yyyy = hoje.getFullYear();
-  const pasta = `METRICAS_${dd}${mm}${yyyy}`;
-
-  try {
-    const snapshot = await get(ref(db, pasta));
-    res.json(snapshot.exists() ? snapshot.val() : {});
-  } catch (err) {
-    res.status(500).json({ erro: err.message });
-  }
-});
-
-/* ============================================================
-    Porta do servidor
+    Porta Render
 ============================================================ */
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`API Pedidos v0.5 rodando na porta ${PORT}`);
-});
+app.listen(PORT, () => console.log(`API v0.5 rodando na porta ${PORT}`));
