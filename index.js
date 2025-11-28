@@ -273,7 +273,7 @@ app.post("/pedido", checkJWT, async (req, res) => {
       cliente,
       endereco: endereco || { rua: "", numero: "", bairro: "", referencia: "" },
       estimatedDeliveryMinutes: req.body.estimatedDeliveryMinutes || 30,
-      id: req.body.id || Date.now(),
+      id: req.body.id || 0,
       tipoPedido: req.body.tipoPedido || "Entrega",
       pagamento: req.body.pagamento || "Outros",
       status: req.body.status || "pendente",
