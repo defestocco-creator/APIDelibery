@@ -56,7 +56,7 @@ app.use(express.json());
 // =========================================================
 app.use((req, res, next) => {
   const start = Date.now();
-  let clientId = req.headers["x-client"] || req.ip || "unknown";
+  let clientId = "cucc";
 
   // Função para SALVAR MÉTRICA
   const saveMetric = async () => {
