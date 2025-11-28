@@ -1,4 +1,4 @@
-// index.js — API Pedidos v3.1 (Métricas por Usuário CORRIGIDO)
+// index.js — API Delibery v0.5 (Firebase Simplificado)
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -6,15 +6,14 @@ dotenv.config();
 
 import jwt from "jsonwebtoken";
 import { initializeApp } from "firebase/app";
-import { getDatabase, ref, push, get } from "firebase/database";
-import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword } from "firebase/auth";
-import { MongoClient } from "mongodb";
+import { getDatabase, ref, push, get, set } from "firebase/database";
+import { getAuth, signInWithEmailAndPassword } from "firebase/auth";
 
-// Configurações
+// Configuração Firebase Principal (delibery-auth)
 const firebaseConfig = {
   apiKey: process.env.FIREBASE_APIKEY,
   authDomain: process.env.FIREBASE_AUTHDOMAIN,
-  databaseURL: process.env.FIREBASE_DATABASE,
+  databaseURL: "https://delibery-auth-default-rtdb.firebaseio.com",
   projectId: process.env.FIREBASE_PROJECTID,
   storageBucket: process.env.FIREBASE_STORAGE,
   messagingSenderId: process.env.FIREBASE_MESSAGING,
@@ -22,99 +21,123 @@ const firebaseConfig = {
 };
 
 const firebaseApp = initializeApp(firebaseConfig);
-const db = getDatabase(firebaseApp);
 const auth = getAuth(firebaseApp);
-
-// MongoDB
-const mongoClient = new MongoClient(process.env.MONGO_URL);
-let metricsDb = null;
-
-async function connectMongo() {
-  try {
-    await mongoClient.connect();
-    metricsDb = mongoClient.db("Amb_users_delibery");
-    console.log("✅ MongoDB conectado - Sistema por usuário");
-  } catch (err) {
-    console.error("❌ ERRO MongoDB:", err);
-  }
-}
-connectMongo();
+const deliberyDb = getDatabase(firebaseApp);
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 // =========================================================
-//   FUNÇÃO PARA OBTER/CRIAR COLLECTION DO USUÁRIO
+//   FUNÇÃO PARA OBTER CREDENCIAIS DO USUÁRIO
 // =========================================================
-async function getOrCreateUserCollection(userId) {
-  if (!metricsDb) {
-    console.log("❌ MongoDB não conectado");
-    return null;
-  }
-
+async function getUserCredentials(userId) {
   try {
-    // Nome da collection baseado no userId do Firebase
-    const collectionName = `user_${userId}`;
+    const userRef = ref(deliberyDb, `usuarios/${userId}`);
+    const snapshot = await get(userRef);
     
-    // Verificar se a collection existe
-    const collections = await metricsDb.listCollections({ name: collectionName }).toArray();
-    
-    if (collections.length === 0) {
-      // Collection não existe → CRIAR
-      console.log(`📁 CRIANDO collection: ${collectionName}`);
-      await metricsDb.createCollection(collectionName);
-      
-      // Criar índice para performance
-      await metricsDb.collection(collectionName).createIndex({ timestamp: -1 });
-      await metricsDb.collection(collectionName).createIndex({ endpoint: 1 });
-      
-      console.log(`✅ Collection criada: ${collectionName}`);
+    if (!snapshot.exists()) {
+      throw new Error("Usuário não encontrado na base delibery");
     }
+
+    const userData = snapshot.val();
     
-    return metricsDb.collection(collectionName);
-    
-  } catch (err) {
-    console.error("❌ Erro ao obter collection:", err);
-    return null;
+    // Extrair credenciais do Firebase do usuário
+    const credentials = {
+      apiKey: userData.apiKey,
+      appId: userData.appId,
+      authDomain: userData.authDomain,
+      databaseURL: userData.databaseURL,
+      measurementId: userData.measurementId,
+      messagingSenderId: userData.messagingSenderId,
+      projectId: userData.projectId,
+      storageBucket: userData.storageBucket
+    };
+
+    // Validar credenciais mínimas
+    if (!credentials.apiKey || !credentials.projectId) {
+      throw new Error("Credenciais do Firebase incompletas");
+    }
+
+    return credentials;
+  } catch (error) {
+    console.error("❌ Erro ao buscar credenciais:", error);
+    throw error;
   }
 }
 
 // =========================================================
-//   MIDDLEWARE DE MÉTRICAS CORRIGIDO
+//   FUNÇÃO PARA CONECTAR AO FIREBASE DO USUÁRIO
+// =========================================================
+function connectToUserFirebase(credentials) {
+  try {
+    const userFirebaseConfig = {
+      apiKey: credentials.apiKey,
+      authDomain: credentials.authDomain,
+      databaseURL: credentials.databaseURL,
+      projectId: credentials.projectId,
+      storageBucket: credentials.storageBucket,
+      messagingSenderId: credentials.messagingSenderId,
+      appId: credentials.appId,
+      measurementId: credentials.measurementId
+    };
+
+    // Criar uma nova instância do Firebase para o usuário
+    const userApp = initializeApp(userFirebaseConfig, `user_${Date.now()}`);
+    return getDatabase(userApp);
+    
+  } catch (error) {
+    console.error("❌ Erro ao conectar ao Firebase do usuário:", error);
+    throw error;
+  }
+}
+
+// =========================================================
+//   SALVAR MÉTRICAS NA PASTA DO USUÁRIO
+// =========================================================
+async function saveUserMetric(userId, metricData) {
+  try {
+    const metricRef = ref(deliberyDb, `usuarios/${userId}/metricas`);
+    const newMetricRef = push(metricRef);
+    
+    const metricWithTimestamp = {
+      ...metricData,
+      timestamp: Date.now(),
+      createdAt: new Date().toISOString()
+    };
+
+    await set(newMetricRef, metricWithTimestamp);
+    return newMetricRef.key;
+    
+  } catch (error) {
+    console.error("❌ Erro ao salvar métrica:", error);
+    throw error;
+  }
+}
+
+// =========================================================
+//   MIDDLEWARE DE MÉTRICAS
 // =========================================================
 function createMetricsMiddleware() {
   return async (req, res, next) => {
     const start = Date.now();
-    
-    // Obter userId do header (definido pelo JWT middleware ou rotas auth)
-    const userId = req.headers["x-user-id"] || "unknown";
+    const userId = req.user?.uid;
 
-    // Função para salvar métrica na collection do usuário
     const saveMetric = async () => {
       try {
-        if (!userId || userId === "unknown") {
-          console.log("⚠️  UserId não disponível para métricas");
-          return;
-        }
-
-        const userCollection = await getOrCreateUserCollection(userId);
-        if (!userCollection) return;
+        if (!userId) return;
 
         const metric = {
-          userId: userId,
           method: req.method,
           endpoint: req.originalUrl,
-          status: res.statusCode,
-          timeMs: Date.now() - start,
-          ip: req.ip,
-          userAgent: req.get('User-Agent') || 'unknown',
-          timestamp: new Date()
+          statusCode: res.statusCode,
+          responseTime: Date.now() - start,
+          timestamp: new Date().toISOString(),
+          userAgent: req.get('User-Agent') || 'unknown'
         };
 
-        console.log(`📊 [${userId}] ${req.method} ${req.originalUrl} → ${res.statusCode} (${metric.timeMs}ms)`);
-        
-        await userCollection.insertOne(metric);
+        await saveUserMetric(userId, metric);
+        console.log(`📊 [${userId}] ${req.method} ${req.originalUrl} → ${res.statusCode} (${metric.responseTime}ms)`);
         
       } catch (error) {
         console.error("❌ Erro ao salvar métrica:", error.message);
@@ -122,14 +145,9 @@ function createMetricsMiddleware() {
     };
 
     res.on('finish', saveMetric);
-    res.on('close', saveMetric);
-
     next();
   };
 }
-
-// Aplicar middleware APÓS as rotas que definem x-user-id
-app.use(createMetricsMiddleware());
 
 // =========================================================
 //   JWT Middleware
@@ -142,20 +160,17 @@ function checkJWT(req, res, next) {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     req.user = decoded;
-    
-    // ✅ DEFINIR userId NO HEADER para o middleware usar
-    if (decoded.uid) {
-      req.headers["x-user-id"] = decoded.uid;
-    }
-    
     next();
   } catch (err) {
     return res.status(401).json({ erro: "Token inválido" });
   }
 }
 
+// Aplicar middleware de métricas APÓS a autenticação
+app.use(createMetricsMiddleware());
+
 // =========================================================
-//   ROTAS DE AUTENTICAÇÃO (DEFINEM x-user-id ANTES do middleware)
+//   ROTAS DE AUTENTICAÇÃO
 // =========================================================
 app.post("/login", async (req, res) => {
   const { email, password } = req.body;
@@ -168,120 +183,91 @@ app.post("/login", async (req, res) => {
     const userCredential = await signInWithEmailAndPassword(auth, email, password);
     const user = userCredential.user;
 
+    // Buscar credenciais do usuário na base delibery
+    const userCredentials = await getUserCredentials(user.uid);
+
     const token = jwt.sign(
-      { uid: user.uid, email: user.email, type: "client" },
+      { 
+        uid: user.uid, 
+        email: user.email, 
+        credentials: userCredentials 
+      },
       process.env.JWT_SECRET,
       { expiresIn: "10h" }
     );
 
-    // ✅ CRIAR collection do usuário no primeiro login
-    await getOrCreateUserCollection(user.uid);
-    
-    // ✅ DEFINIR header para o middleware de métricas
-    req.headers["x-user-id"] = user.uid;
-    
+    // Salvar métrica de login
+    await saveUserMetric(user.uid, {
+      type: "login_success",
+      endpoint: "/login",
+      method: "POST"
+    });
+
     res.json({ 
       ok: true, 
       token, 
       clientId: user.uid, 
       email: user.email,
-      message: "Collection de métricas criada/pronta"
+      hasCredentials: true
     });
 
   } catch (err) {
     console.error("❌ Erro login:", err.code);
+    
+    // Tentar salvar métrica de erro se tiver userId
+    if (err.customUserId) {
+      await saveUserMetric(err.customUserId, {
+        type: "login_error",
+        endpoint: "/login",
+        method: "POST",
+        error: err.code
+      });
+    }
+    
     res.status(401).json({ erro: "Erro ao fazer login", code: err.code });
   }
 });
 
-app.post("/cadastro", async (req, res) => {
-  const { email, password } = req.body;
-
-  if (!email || !password) {
-    return res.status(400).json({ erro: "Email e senha são obrigatórios" });
-  }
-
-  try {
-    const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-    const user = userCredential.user;
-
-    const token = jwt.sign(
-      { uid: user.uid, email: user.email, type: "client" },
-      process.env.JWT_SECRET,
-      { expiresIn: "10h" }
-    );
-
-    // ✅ CRIAR collection do usuário no cadastro
-    await getOrCreateUserCollection(user.uid);
-    
-    // ✅ DEFINIR header para o middleware
-    req.headers["x-user-id"] = user.uid;
-    
-    res.status(201).json({
-      ok: true,
-      token,
-      clientId: user.uid,
-      email: user.email,
-      message: "Usuário criado com collection de métricas"
-    });
-
-  } catch (err) {
-    console.error("❌ Erro cadastro:", err.code);
-    res.status(400).json({ erro: "Erro ao criar usuário", code: err.code });
-  }
-});
-
 // =========================================================
-//   ROTA PARA DEBUG
-// =========================================================
-app.get("/debug-user", checkJWT, async (req, res) => {
-  try {
-    const userUid = req.user.uid;
-    const userCollection = await getOrCreateUserCollection(userUid);
-    
-    let metricCount = 0;
-    if (userCollection) {
-      metricCount = await userCollection.countDocuments();
-    }
-
-    res.json({
-      userId: userUid,
-      collectionName: `user_${userUid}`,
-      metricsCount: metricCount,
-      headers: {
-        'x-user-id': req.headers['x-user-id'],
-        'authorization': req.headers['authorization'] ? 'present' : 'missing'
-      }
-    });
-
-  } catch (err) {
-    res.status(500).json({ erro: err.message });
-  }
-});
-
-// =========================================================
-//   ROTAS PRINCIPAIS
+//   ROTA PRINCIPAL
 // =========================================================
 app.get("/", (req, res) => {
   res.json({
     ok: true,
-    api: "API Pedidos v3.1 — MÉTRICAS POR USUÁRIO ✅",
-    message: "Cada usuário tem sua própria collection de métricas",
+    api: "API Delibery v0.5 — FIREBASE SIMPLIFICADO ✅",
+    message: "Credenciais dinâmicas + Métricas no Firebase",
     timestamp: new Date().toISOString()
   });
 });
 
+// =========================================================
+//   FUNÇÃO AUXILIAR - PASTA DO DIA
+// =========================================================
 function pastaDoDia() {
   const hoje = new Date();
   return `PEDIDOS_MANUAIS_${String(hoje.getDate()).padStart(2, "0")}${String(hoje.getMonth() + 1).padStart(2, "0")}${hoje.getFullYear()}`;
 }
 
+// =========================================================
+//   ROTA DE PEDIDOS - ENVIA PARA O FIREBASE DO USUÁRIO
+// =========================================================
 app.post("/pedido", checkJWT, async (req, res) => {
   try {
+    const userId = req.user.uid;
+    
+    // 1. Buscar credenciais do usuário
+    const userCredentials = await getUserCredentials(userId);
+    
+    // 2. Conectar ao Firebase do usuário
+    const userDb = connectToUserFirebase(userCredentials);
+    
+    // 3. Preparar pedido
     const pasta = pastaDoDia();
     const { cliente, endereco, itens = {} } = req.body;
 
-    if (!cliente) return res.status(400).json({ erro: "cliente é obrigatório" });
+    if (!cliente) {
+      return res.status(400).json({ erro: "cliente é obrigatório" });
+    }
 
     const pedido = {
       cliente,
@@ -295,53 +281,108 @@ app.post("/pedido", checkJWT, async (req, res) => {
       telefone: req.body.telefone || "-",
       valor_total: req.body.valor_total || 0,
       itens,
-      criadoPor: req.user.uid,
-      criadoEm: new Date().toISOString()
+      criadoPor: userId,
+      criadoEm: new Date().toISOString(),
+      userProject: userCredentials.projectId
     };
 
-    const novoRef = await push(ref(db, pasta), pedido);
+    // 4. Salvar no Firebase DO USUÁRIO
+    const novoRef = await push(ref(userDb, pasta), pedido);
     
+    // 5. Salvar métrica de sucesso
+    await saveUserMetric(userId, {
+      type: "pedido_criado",
+      endpoint: "/pedido",
+      method: "POST",
+      orderId: novoRef.key,
+      projectId: userCredentials.projectId
+    });
+
     res.status(201).json({ 
       ok: true, 
       firebase_id: novoRef.key, 
       pasta, 
+      project: userCredentials.projectId,
       pedido 
     });
 
   } catch (err) {
-    console.error("❌ Erro pedido:", err);
-    res.status(500).json({ erro: err.message });
-  }
-});
-
-app.get("/pedidos", checkJWT, async (req, res) => {
-  try {
-    const pasta = pastaDoDia();
-    const snapshot = await get(ref(db, pasta));
-    res.json(snapshot.exists() ? snapshot.val() : {});
-
-  } catch (err) {
+    console.error("❌ Erro ao criar pedido:", err);
+    
+    // Salvar métrica de erro
+    if (req.user?.uid) {
+      await saveUserMetric(req.user.uid, {
+        type: "pedido_erro",
+        endpoint: "/pedido",
+        method: "POST",
+        error: err.message
+      });
+    }
+    
     res.status(500).json({ erro: err.message });
   }
 });
 
 // =========================================================
-//   ROTA MÉTRICAS - AGORA DA COLLECTION DO USUÁRIO
+//   BUSCAR PEDIDOS DO USUÁRIO
+// =========================================================
+app.get("/pedidos", checkJWT, async (req, res) => {
+  try {
+    const userId = req.user.uid;
+    
+    // 1. Buscar credenciais do usuário
+    const userCredentials = await getUserCredentials(userId);
+    
+    // 2. Conectar ao Firebase do usuário
+    const userDb = connectToUserFirebase(userCredentials);
+    
+    // 3. Buscar pedidos
+    const pasta = pastaDoDia();
+    const snapshot = await get(ref(userDb, pasta));
+    
+    const pedidos = snapshot.exists() ? snapshot.val() : {};
+
+    // 4. Salvar métrica de consulta
+    await saveUserMetric(userId, {
+      type: "pedidos_consultados",
+      endpoint: "/pedidos",
+      method: "GET",
+      count: Object.keys(pedidos).length,
+      projectId: userCredentials.projectId
+    });
+
+    res.json(pedidos);
+
+  } catch (err) {
+    console.error("❌ Erro ao buscar pedidos:", err);
+    
+    if (req.user?.uid) {
+      await saveUserMetric(req.user.uid, {
+        type: "pedidos_erro",
+        endpoint: "/pedidos",
+        method: "GET",
+        error: err.message
+      });
+    }
+    
+    res.status(500).json({ erro: err.message });
+  }
+});
+
+// =========================================================
+//   ROTA MÉTRICAS DO USUÁRIO
 // =========================================================
 app.get("/metricas", checkJWT, async (req, res) => {
   try {
-    const userUid = req.user.uid;
+    const userId = req.user.uid;
     
-    console.log(`📊 Buscando métricas do usuário: ${userUid}`);
+    // Buscar métricas diretamente da pasta do usuário
+    const metricsRef = ref(deliberyDb, `usuarios/${userId}/metricas`);
+    const snapshot = await get(metricsRef);
     
-    const userCollection = await getOrCreateUserCollection(userUid);
-    if (!userCollection) {
-      return res.status(500).json({ erro: "Erro ao acessar collection do usuário" });
-    }
-
-    const metricas = await userCollection.find({}).sort({ timestamp: -1 }).limit(100).toArray();
+    const metricas = snapshot.exists() ? snapshot.val() : {};
     
-    console.log(`📊 Retornando ${metricas.length} métricas de user_${userUid}`);
+    console.log(`📊 Retornando ${Object.keys(metricas).length} métricas de ${userId}`);
     
     res.json(metricas);
 
@@ -352,12 +393,39 @@ app.get("/metricas", checkJWT, async (req, res) => {
 });
 
 // =========================================================
+//   ROTA DEBUG - VER CREDENCIAIS DO USUÁRIO
+// =========================================================
+app.get("/debug-credenciais", checkJWT, async (req, res) => {
+  try {
+    const userId = req.user.uid;
+    const credentials = await getUserCredentials(userId);
+    
+    res.json({
+      userId,
+      hasCredentials: true,
+      projectId: credentials.projectId,
+      authDomain: credentials.authDomain,
+      databaseURL: credentials.databaseURL
+    });
+
+  } catch (err) {
+    res.status(500).json({ 
+      userId: req.user.uid,
+      hasCredentials: false,
+      error: err.message 
+    });
+  }
+});
+
+// =========================================================
 //   INICIAR SERVIDOR
 // =========================================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 API v3.1 rodando na porta ${PORT}`);
-  console.log(`📊 SISTEMA: MÉTRICAS POR USUÁRIO ✅`);
+  console.log(`🚀 API Delibery v0.5 rodando na porta ${PORT}`);
+  console.log(`📊 SISTEMA: CREDENCIAIS DINÂMICAS + FIREBASE ✅`);
   console.log(`🔐 Firebase Auth: ATIVO`);
-  console.log(`🗄️  MongoDB: ${metricsDb ? 'CONECTADO' : 'DESCONECTADO'}`);
+  console.log(`📍 Database Principal: delibery-auth`);
+  console.log(`📨 Pedidos: Firebase do usuário`);
+  console.log(`📈 Métricas: usuarios > user_id > metricas`);
 });
