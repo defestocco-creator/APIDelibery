@@ -32,7 +32,7 @@ let metricsDb = null;
 async function connectMongo() {
   try {
     await mongoClient.connect();
-    metricsDb = mongoClient.db("metricas_usuarios");
+    metricsDb = mongoClient.db("Amb_users_delibery");
     console.log("✅ MongoDB conectado - Sistema por usuário");
   } catch (err) {
     console.error("❌ ERRO MongoDB:", err);
