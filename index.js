@@ -1,106 +1,363 @@
-# teste_corrigido.py
-import requests
-import time
+// index.js — API Pedidos v3.1 (Métricas por Usuário CORRIGIDO)
+import express from "express";
+import cors from "cors";
+import dotenv from "dotenv";
+dotenv.config();
 
-# Ignorar SSL em desenvolvimento
-requests.packages.urllib3.disable_warnings()
+import jwt from "jsonwebtoken";
+import { initializeApp } from "firebase/app";
+import { getDatabase, ref, push, get } from "firebase/database";
+import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword } from "firebase/auth";
+import { MongoClient } from "mongodb";
 
-def teste_corrigido():
-    base_url = "https://apidelibery.onrender.com"
+// Configurações
+const firebaseConfig = {
+  apiKey: process.env.FIREBASE_APIKEY,
+  authDomain: process.env.FIREBASE_AUTHDOMAIN,
+  databaseURL: process.env.FIREBASE_DATABASE,
+  projectId: process.env.FIREBASE_PROJECTID,
+  storageBucket: process.env.FIREBASE_STORAGE,
+  messagingSenderId: process.env.FIREBASE_MESSAGING,
+  appId: process.env.FIREBASE_APPID,
+};
+
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getDatabase(firebaseApp);
+const auth = getAuth(firebaseApp);
+
+// MongoDB
+const mongoClient = new MongoClient(process.env.MONGO_URL);
+let metricsDb = null;
+
+async function connectMongo() {
+  try {
+    await mongoClient.connect();
+    metricsDb = mongoClient.db("Amb_users_delibery");
+    console.log("✅ MongoDB conectado - Sistema por usuário");
+  } catch (err) {
+    console.error("❌ ERRO MongoDB:", err);
+  }
+}
+connectMongo();
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// =========================================================
+//   FUNÇÃO PARA OBTER/CRIAR COLLECTION DO USUÁRIO
+// =========================================================
+async function getOrCreateUserCollection(userId) {
+  if (!metricsDb) {
+    console.log("❌ MongoDB não conectado");
+    return null;
+  }
+
+  try {
+    // Nome da collection baseado no userId do Firebase
+    const collectionName = `user_${userId}`;
     
-    print("🔧 TESTE CORRIGIDO - MÉTRICAS POR USUÁRIO")
-    print("=" * 50)
+    // Verificar se a collection existe
+    const collections = await metricsDb.listCollections({ name: collectionName }).toArray();
     
-    # 1. Health Check
-    print("1. 🔍 Health Check...")
-    try:
-        response = requests.get(f"{base_url}/", verify=False, timeout=10)
-        print(f"   ✅ API: {response.json().get('api')}")
-    except Exception as e:
-        print(f"   ❌ Erro: {e}")
-        return
+    if (collections.length === 0) {
+      // Collection não existe → CRIAR
+      console.log(`📁 CRIANDO collection: ${collectionName}`);
+      await metricsDb.createCollection(collectionName);
+      
+      // Criar índice para performance
+      await metricsDb.collection(collectionName).createIndex({ timestamp: -1 });
+      await metricsDb.collection(collectionName).createIndex({ endpoint: 1 });
+      
+      console.log(`✅ Collection criada: ${collectionName}`);
+    }
     
-    # 2. Login
-    print("\n2. 🔐 Login...")
-    try:
-        login = requests.post(
-            f"{base_url}/login",
-            json={"email": "teste@delibery.com", "password": "senha123"},
-            verify=False,
-            timeout=15
-        )
+    return metricsDb.collection(collectionName);
+    
+  } catch (err) {
+    console.error("❌ Erro ao obter collection:", err);
+    return null;
+  }
+}
+
+// =========================================================
+//   MIDDLEWARE DE MÉTRICAS CORRIGIDO
+// =========================================================
+function createMetricsMiddleware() {
+  return async (req, res, next) => {
+    const start = Date.now();
+    
+    // Obter userId do header (definido pelo JWT middleware ou rotas auth)
+    const userId = req.headers["x-user-id"] || "unknown";
+
+    // Função para salvar métrica na collection do usuário
+    const saveMetric = async () => {
+      try {
+        if (!userId || userId === "unknown") {
+          console.log("⚠️  UserId não disponível para métricas");
+          return;
+        }
+
+        const userCollection = await getOrCreateUserCollection(userId);
+        if (!userCollection) return;
+
+        const metric = {
+          userId: userId,
+          method: req.method,
+          endpoint: req.originalUrl,
+          status: res.statusCode,
+          timeMs: Date.now() - start,
+          ip: req.ip,
+          userAgent: req.get('User-Agent') || 'unknown',
+          timestamp: new Date()
+        };
+
+        console.log(`📊 [${userId}] ${req.method} ${req.originalUrl} → ${res.statusCode} (${metric.timeMs}ms)`);
         
-        if login.status_code == 200:
-            data = login.json()
-            token = data["token"]
-            user_id = data["clientId"]
-            
-            print(f"   ✅ Login OK")
-            print(f"   👤 User ID: {user_id}")
-            print(f"   📝 {data.get('message')}")
-            
-            headers = {"Authorization": f"Bearer {token}"}
-            
-            # 3. Debug - Verificar usuário
-            print("\n3. 🐛 Debug usuário...")
-            debug = requests.get(f"{base_url}/debug-user", headers=headers, verify=False)
-            if debug.status_code == 200:
-                debug_data = debug.json()
-                print(f"   📁 Collection: {debug_data.get('collectionName')}")
-                print(f"   📊 Métricas na collection: {debug_data.get('metricsCount')}")
-            
-            # 4. Fazer algumas ações para gerar métricas
-            print("\n4. 🚀 Gerando métricas...")
-            
-            # Criar pedido
-            print("   📦 Criando pedido...")
-            pedido_resp = requests.post(
-                f"{base_url}/pedido",
-                json={
-                    "cliente": "Cliente Teste Métricas",
-                    "valor_total": 99.99,
-                    "endereco": {"rua": "Rua Teste", "numero": "123"}
-                },
-                headers=headers,
-                verify=False
-            )
-            print(f"      Status: {pedido_resp.status_code}")
-            
-            time.sleep(1)
-            
-            # Listar pedidos
-            print("   📋 Listando pedidos...")
-            pedidos_resp = requests.get(f"{base_url}/pedidos", headers=headers, verify=False)
-            print(f"      Status: {pedidos_resp.status_code}")
-            
-            time.sleep(1)
-            
-            # 5. Ver métricas
-            print("\n5. 📊 Verificando métricas...")
-            metricas_resp = requests.get(f"{base_url}/metricas", headers=headers, verify=False)
-            
-            if metricas_resp.status_code == 200:
-                metricas = metricas_resp.json()
-                print(f"   ✅ Minhas métricas: {len(metricas)}")
-                
-                if metricas:
-                    print(f"\n   📈 ÚLTIMAS MÉTRICAS:")
-                    for i, m in enumerate(metricas[:5]):
-                        print(f"   {i+1}. {m.get('method')} {m.get('endpoint')}")
-                        print(f"       Status: {m.get('status')} | Tempo: {m.get('timeMs')}ms")
-                        print(f"       UserId: {m.get('userId')}")
-                else:
-                    print("   ❌ NENHUMA MÉTRICA ENCONTRADA!")
-            else:
-                print(f"   ❌ Erro nas métricas: {metricas_resp.status_code}")
-                print(f"   📄 {metricas_resp.text}")
-                
-        else:
-            print(f"   ❌ Login falhou: {login.status_code}")
-            print(f"   📄 {login.text}")
-            
-    except Exception as e:
-        print(f"   ❌ Erro: {e}")
+        await userCollection.insertOne(metric);
+        
+      } catch (error) {
+        console.error("❌ Erro ao salvar métrica:", error.message);
+      }
+    };
 
-if __name__ == "__main__":
-    teste_corrigido()
+    res.on('finish', saveMetric);
+    res.on('close', saveMetric);
+
+    next();
+  };
+}
+
+// Aplicar middleware APÓS as rotas que definem x-user-id
+app.use(createMetricsMiddleware());
+
+// =========================================================
+//   JWT Middleware
+// =========================================================
+function checkJWT(req, res, next) {
+  const header = req.headers.authorization;
+  if (!header) return res.status(401).json({ erro: "Token não enviado" });
+
+  const token = header.replace("Bearer ", "");
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded;
+    
+    // ✅ DEFINIR userId NO HEADER para o middleware usar
+    if (decoded.uid) {
+      req.headers["x-user-id"] = decoded.uid;
+    }
+    
+    next();
+  } catch (err) {
+    return res.status(401).json({ erro: "Token inválido" });
+  }
+}
+
+// =========================================================
+//   ROTAS DE AUTENTICAÇÃO (DEFINEM x-user-id ANTES do middleware)
+// =========================================================
+app.post("/login", async (req, res) => {
+  const { email, password } = req.body;
+  
+  if (!email || !password) {
+    return res.status(400).json({ erro: "Email e senha são obrigatórios" });
+  }
+
+  try {
+    const userCredential = await signInWithEmailAndPassword(auth, email, password);
+    const user = userCredential.user;
+
+    const token = jwt.sign(
+      { uid: user.uid, email: user.email, type: "client" },
+      process.env.JWT_SECRET,
+      { expiresIn: "10h" }
+    );
+
+    // ✅ CRIAR collection do usuário no primeiro login
+    await getOrCreateUserCollection(user.uid);
+    
+    // ✅ DEFINIR header para o middleware de métricas
+    req.headers["x-user-id"] = user.uid;
+    
+    res.json({ 
+      ok: true, 
+      token, 
+      clientId: user.uid, 
+      email: user.email,
+      message: "Collection de métricas criada/pronta"
+    });
+
+  } catch (err) {
+    console.error("❌ Erro login:", err.code);
+    res.status(401).json({ erro: "Erro ao fazer login", code: err.code });
+  }
+});
+
+app.post("/cadastro", async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ erro: "Email e senha são obrigatórios" });
+  }
+
+  try {
+    const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+    const user = userCredential.user;
+
+    const token = jwt.sign(
+      { uid: user.uid, email: user.email, type: "client" },
+      process.env.JWT_SECRET,
+      { expiresIn: "10h" }
+    );
+
+    // ✅ CRIAR collection do usuário no cadastro
+    await getOrCreateUserCollection(user.uid);
+    
+    // ✅ DEFINIR header para o middleware
+    req.headers["x-user-id"] = user.uid;
+    
+    res.status(201).json({
+      ok: true,
+      token,
+      clientId: user.uid,
+      email: user.email,
+      message: "Usuário criado com collection de métricas"
+    });
+
+  } catch (err) {
+    console.error("❌ Erro cadastro:", err.code);
+    res.status(400).json({ erro: "Erro ao criar usuário", code: err.code });
+  }
+});
+
+// =========================================================
+//   ROTA PARA DEBUG
+// =========================================================
+app.get("/debug-user", checkJWT, async (req, res) => {
+  try {
+    const userUid = req.user.uid;
+    const userCollection = await getOrCreateUserCollection(userUid);
+    
+    let metricCount = 0;
+    if (userCollection) {
+      metricCount = await userCollection.countDocuments();
+    }
+
+    res.json({
+      userId: userUid,
+      collectionName: `user_${userUid}`,
+      metricsCount: metricCount,
+      headers: {
+        'x-user-id': req.headers['x-user-id'],
+        'authorization': req.headers['authorization'] ? 'present' : 'missing'
+      }
+    });
+
+  } catch (err) {
+    res.status(500).json({ erro: err.message });
+  }
+});
+
+// =========================================================
+//   ROTAS PRINCIPAIS
+// =========================================================
+app.get("/", (req, res) => {
+  res.json({
+    ok: true,
+    api: "API Pedidos v3.1 — MÉTRICAS POR USUÁRIO ✅",
+    message: "Cada usuário tem sua própria collection de métricas",
+    timestamp: new Date().toISOString()
+  });
+});
+
+function pastaDoDia() {
+  const hoje = new Date();
+  return `PEDIDOS_MANUAIS_${String(hoje.getDate()).padStart(2, "0")}${String(hoje.getMonth() + 1).padStart(2, "0")}${hoje.getFullYear()}`;
+}
+
+app.post("/pedido", checkJWT, async (req, res) => {
+  try {
+    const pasta = pastaDoDia();
+    const { cliente, endereco, itens = {} } = req.body;
+
+    if (!cliente) return res.status(400).json({ erro: "cliente é obrigatório" });
+
+    const pedido = {
+      cliente,
+      endereco: endereco || { rua: "", numero: "", bairro: "", referencia: "" },
+      estimatedDeliveryMinutes: req.body.estimatedDeliveryMinutes || 30,
+      id: req.body.id || Date.now(),
+      tipoPedido: req.body.tipoPedido || "Entrega",
+      pagamento: req.body.pagamento || "Outros",
+      status: req.body.status || "pendente",
+      taxa: req.body.taxa || 0,
+      telefone: req.body.telefone || "-",
+      valor_total: req.body.valor_total || 0,
+      itens,
+      criadoPor: req.user.uid,
+      criadoEm: new Date().toISOString()
+    };
+
+    const novoRef = await push(ref(db, pasta), pedido);
+    
+    res.status(201).json({ 
+      ok: true, 
+      firebase_id: novoRef.key, 
+      pasta, 
+      pedido 
+    });
+
+  } catch (err) {
+    console.error("❌ Erro pedido:", err);
+    res.status(500).json({ erro: err.message });
+  }
+});
+
+app.get("/pedidos", checkJWT, async (req, res) => {
+  try {
+    const pasta = pastaDoDia();
+    const snapshot = await get(ref(db, pasta));
+    res.json(snapshot.exists() ? snapshot.val() : {});
+
+  } catch (err) {
+    res.status(500).json({ erro: err.message });
+  }
+});
+
+// =========================================================
+//   ROTA MÉTRICAS - AGORA DA COLLECTION DO USUÁRIO
+// =========================================================
+app.get("/metricas", checkJWT, async (req, res) => {
+  try {
+    const userUid = req.user.uid;
+    
+    console.log(`📊 Buscando métricas do usuário: ${userUid}`);
+    
+    const userCollection = await getOrCreateUserCollection(userUid);
+    if (!userCollection) {
+      return res.status(500).json({ erro: "Erro ao acessar collection do usuário" });
+    }
+
+    const metricas = await userCollection.find({}).sort({ timestamp: -1 }).limit(100).toArray();
+    
+    console.log(`📊 Retornando ${metricas.length} métricas de user_${userUid}`);
+    
+    res.json(metricas);
+
+  } catch (err) {
+    console.error("❌ Erro ao buscar métricas:", err);
+    res.status(500).json({ erro: err.message });
+  }
+});
+
+// =========================================================
+//   INICIAR SERVIDOR
+// =========================================================
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 API v3.1 rodando na porta ${PORT}`);
+  console.log(`📊 SISTEMA: MÉTRICAS POR USUÁRIO ✅`);
+  console.log(`🔐 Firebase Auth: ATIVO`);
+  console.log(`🗄️  MongoDB: ${metricsDb ? 'CONECTADO' : 'DESCONECTADO'}`);
+});
