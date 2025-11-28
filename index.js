@@ -1,22 +1,16 @@
-// index.js — API Pedidos v2.4 (MÉTRICAS FILTRADAS POR CLIENT ID)
+// index.js — API Pedidos v3.0 (Métricas por Usuário)
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 dotenv.config();
 
 import jwt from "jsonwebtoken";
-
-// Firebase
 import { initializeApp } from "firebase/app";
 import { getDatabase, ref, push, get } from "firebase/database";
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword } from "firebase/auth";
+import { MongoClient } from "mongodb";
 
-// MongoDB
-import { MongoClient, ObjectId } from "mongodb";
-
-// =========================================================
-//   Configurações
-// =========================================================
+// Configurações
 const firebaseConfig = {
   apiKey: process.env.FIREBASE_APIKEY,
   authDomain: process.env.FIREBASE_AUTHDOMAIN,
@@ -33,14 +27,13 @@ const auth = getAuth(firebaseApp);
 
 // MongoDB
 const mongoClient = new MongoClient(process.env.MONGO_URL);
-let metricsCollection = null;
+let metricsDb = null;
 
 async function connectMongo() {
   try {
     await mongoClient.connect();
-    const dbMongo = mongoClient.db("metricas_api");
-    metricsCollection = dbMongo.collection("metricas");
-    console.log("✅ MongoDB conectado - Métricas PRONTAS");
+    metricsDb = mongoClient.db("metricas_usuarios");
+    console.log("✅ MongoDB conectado - Sistema por usuário");
   } catch (err) {
     console.error("❌ ERRO MongoDB:", err);
   }
@@ -52,22 +45,65 @@ app.use(cors());
 app.use(express.json());
 
 // =========================================================
-//   MIDDLEWARE DE MÉTRICAS CORRIGIDO
+//   FUNÇÃO PARA OBTER/CRIAR COLLECTION DO USUÁRIO
 // =========================================================
-app.use((req, res, next) => {
-  const start = Date.now();
-  let clientId = "cucc";
+async function getOrCreateUserCollection(userId) {
+  if (!metricsDb) {
+    console.log("❌ MongoDB não conectado");
+    return null;
+  }
 
-  // Função para SALVAR MÉTRICA
+  try {
+    // Nome da collection baseado no userId do Firebase
+    const collectionName = `user_${userId}`;
+    
+    // Verificar se a collection existe
+    const collections = await metricsDb.listCollections({ name: collectionName }).toArray();
+    
+    if (collections.length === 0) {
+      // Collection não existe → CRIAR
+      console.log(`📁 CRIANDO collection: ${collectionName}`);
+      await metricsDb.createCollection(collectionName);
+      
+      // Criar índice para performance
+      await metricsDb.collection(collectionName).createIndex({ timestamp: -1 });
+      await metricsDb.collection(collectionName).createIndex({ endpoint: 1 });
+      
+      console.log(`✅ Collection criada: ${collectionName}`);
+    } else {
+      console.log(`📁 Collection já existe: ${collectionName}`);
+    }
+    
+    return metricsDb.collection(collectionName);
+    
+  } catch (err) {
+    console.error("❌ Erro ao obter collection:", err);
+    return null;
+  }
+}
+
+// =========================================================
+//   MIDDLEWARE DE MÉTRICAS POR USUÁRIO
+// =========================================================
+app.use(async (req, res, next) => {
+  const start = Date.now();
+  
+  // Obter userId do header (será definido nas rotas auth)
+  const userId = req.headers["x-user-id"] || "unknown";
+
+  // Função para salvar métrica na collection do usuário
   const saveMetric = async () => {
     try {
-      if (!metricsCollection) {
-        console.log("⚠️  MongoDB não conectado");
+      if (!userId || userId === "unknown") {
+        console.log("⚠️  UserId não disponível para métricas");
         return;
       }
 
+      const userCollection = await getOrCreateUserCollection(userId);
+      if (!userCollection) return;
+
       const metric = {
-        clientId: clientId,
+        userId: userId,
         method: req.method,
         endpoint: req.originalUrl,
         status: res.statusCode,
@@ -77,12 +113,12 @@ app.use((req, res, next) => {
         timestamp: new Date()
       };
 
-      console.log(`📊 MÉTRICA: ${req.method} ${req.originalUrl} → ${res.statusCode} | Client: ${clientId}`);
+      console.log(`📊 [${userId}] ${req.method} ${req.originalUrl} → ${res.statusCode} (${metric.timeMs}ms)`);
       
-      await metricsCollection.insertOne(metric);
+      await userCollection.insertOne(metric);
       
     } catch (error) {
-      console.error("❌ ERRO AO SALVAR MÉTRICA:", error.message);
+      console.error("❌ Erro ao salvar métrica:", error.message);
     }
   };
 
@@ -104,9 +140,9 @@ function checkJWT(req, res, next) {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     req.user = decoded;
     
-    // ✅ DEFINIR clientId NO HEADER para o middleware usar
+    // ✅ DEFINIR userId NO HEADER para o middleware usar
     if (decoded.uid) {
-      req.headers["x-client"] = decoded.uid;
+      req.headers["x-user-id"] = decoded.uid;
     }
     
     next();
@@ -135,14 +171,18 @@ app.post("/login", async (req, res) => {
       { expiresIn: "10h" }
     );
 
-    // ✅ DEFINIR header x-client para métricas
-    req.headers["x-client"] = user.uid;
+    // ✅ CRIAR collection do usuário no primeiro login
+    await getOrCreateUserCollection(user.uid);
+    
+    // ✅ DEFINIR header para o middleware
+    req.headers["x-user-id"] = user.uid;
     
     res.json({ 
       ok: true, 
       token, 
       clientId: user.uid, 
-      email: user.email 
+      email: user.email,
+      message: "Collection de métricas criada/pronta"
     });
 
   } catch (err) {
@@ -167,15 +207,18 @@ app.post("/cadastro", async (req, res) => {
       { expiresIn: "10h" }
     );
 
-    // ✅ DEFINIR header x-client para métricas
-    req.headers["x-client"] = user.uid;
+    // ✅ CRIAR collection do usuário no cadastro
+    await getOrCreateUserCollection(user.uid);
+    
+    // ✅ DEFINIR header para o middleware
+    req.headers["x-user-id"] = user.uid;
     
     res.status(201).json({
       ok: true,
       token,
       clientId: user.uid,
       email: user.email,
-      message: "Usuário criado com sucesso"
+      message: "Usuário criado com collection de métricas"
     });
 
   } catch (err) {
@@ -184,36 +227,35 @@ app.post("/cadastro", async (req, res) => {
 });
 
 // =========================================================
-//   ROTA ESPECIAL PARA VER TODAS AS MÉTRICAS (DEBUG)
+//   ROTA PARA LISTAR COLLECTIONS (ADMIN)
 // =========================================================
-app.get("/debug-metricas-completas", checkJWT, async (req, res) => {
+app.get("/admin/collections", checkJWT, async (req, res) => {
   try {
-    const todasMetricas = await metricsCollection.find({}).sort({ timestamp: -1 }).limit(50).toArray();
-    
-    console.log(`🔍 DEBUG: ${todasMetricas.length} métricas no total`);
-    
-    // Métricas do usuário atual
-    const minhasMetricas = todasMetricas.filter(m => m.clientId === req.user.uid);
-    
+    if (!metricsDb) {
+      return res.status(500).json({ erro: "MongoDB não conectado" });
+    }
+
+    const collections = await metricsDb.listCollections().toArray();
+    const collectionsInfo = [];
+
+    for (let coll of collections) {
+      const collection = metricsDb.collection(coll.name);
+      const count = await collection.countDocuments();
+      
+      collectionsInfo.push({
+        name: coll.name,
+        documents: count,
+        size: coll.options?.size || "N/A"
+      });
+    }
+
     res.json({
-      usuario_atual: {
-        uid: req.user.uid,
-        email: req.user.email
-      },
-      total_metricas: todasMetricas.length,
-      minhas_metricas: minhasMetricas.length,
-      todas_as_metricas: todasMetricas.map(m => ({
-        clientId: m.clientId,
-        method: m.method,
-        endpoint: m.endpoint,
-        status: m.status,
-        timeMs: m.timeMs,
-        timestamp: m.timestamp
-      }))
+      totalCollections: collections.length,
+      collections: collectionsInfo
     });
 
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ erro: err.message });
   }
 });
 
@@ -223,8 +265,8 @@ app.get("/debug-metricas-completas", checkJWT, async (req, res) => {
 app.get("/", (req, res) => {
   res.json({
     ok: true,
-    api: "API Pedidos v2.4 — MÉTRICAS FILTRADAS POR CLIENT ID ✅",
-    message: "Cada usuário vê apenas suas próprias métricas",
+    api: "API Pedidos v3.0 — MÉTRICAS POR USUÁRIO ✅",
+    message: "Cada usuário tem sua própria collection de métricas",
     timestamp: new Date().toISOString()
   });
 });
@@ -284,25 +326,55 @@ app.get("/pedidos", checkJWT, async (req, res) => {
 });
 
 // =========================================================
-//   ROTA MÉTRICAS CORRIGIDA - FILTRAR POR CLIENT ID
+//   ROTA MÉTRICAS - AGORA DA COLLECTION DO USUÁRIO
 // =========================================================
 app.get("/metricas", checkJWT, async (req, res) => {
   try {
     const userUid = req.user.uid;
     
-    console.log(`📊 Buscando métricas para: ${userUid}`);
+    console.log(`📊 Buscando métricas do usuário: ${userUid}`);
     
-    // ✅ FILTRAR APENAS AS MÉTRICAS DESTE USUÁRIO
-    const minhasMetricas = await metricsCollection.find({ 
-      clientId: userUid 
-    }).sort({ timestamp: -1 }).limit(100).toArray();
+    const userCollection = await getOrCreateUserCollection(userUid);
+    if (!userCollection) {
+      return res.status(500).json({ erro: "Erro ao acessar collection do usuário" });
+    }
+
+    const metricas = await userCollection.find({}).sort({ timestamp: -1 }).limit(100).toArray();
     
-    console.log(`📊 Encontradas ${minhasMetricas.length} métricas para ${userUid}`);
+    console.log(`📊 Retornando ${metricas.length} métricas de user_${userUid}`);
     
-    res.json(minhasMetricas);
+    res.json(metricas);
 
   } catch (err) {
     console.error("❌ Erro ao buscar métricas:", err);
+    res.status(500).json({ erro: err.message });
+  }
+});
+
+// =========================================================
+//   ROTA PARA ZERAR MÉTRICAS DO USUÁRIO
+// =========================================================
+app.delete("/minhas-metricas", checkJWT, async (req, res) => {
+  try {
+    const userUid = req.user.uid;
+    const userCollection = await getOrCreateUserCollection(userUid);
+    
+    if (!userCollection) {
+      return res.status(500).json({ erro: "Collection não encontrada" });
+    }
+
+    const totalAntes = await userCollection.countDocuments({});
+    const result = await userCollection.deleteMany({});
+    
+    console.log(`🗑️  Usuário ${userUid} zerou ${result.deletedCount} métricas`);
+    
+    res.json({
+      message: "Métricas zeradas com sucesso",
+      removidas: result.deletedCount,
+      total_antes: totalAntes
+    });
+
+  } catch (err) {
     res.status(500).json({ erro: err.message });
   }
 });
@@ -312,7 +384,8 @@ app.get("/metricas", checkJWT, async (req, res) => {
 // =========================================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 API v2.4 rodando na porta ${PORT}`);
-  console.log(`📊 MÉTRICAS: FILTRADAS POR CLIENT ID ✅`);
+  console.log(`🚀 API v3.0 rodando na porta ${PORT}`);
+  console.log(`📊 SISTEMA: MÉTRICAS POR USUÁRIO ✅`);
   console.log(`🔐 Firebase Auth: ATIVO`);
+  console.log(`🗄️  MongoDB: ${metricsDb ? 'CONECTADO' : 'DESCONECTADO'}`);
 });
