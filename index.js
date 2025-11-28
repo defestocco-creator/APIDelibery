@@ -331,6 +331,7 @@ app.get("/pedidos", checkJWT, async (req, res) => {
 app.get("/metricas", checkJWT, async (req, res) => {
   try {
     const userUid = req.user.uid;
+    console.log('test: ${collectionName}');
     
     console.log(`📊 Buscando métricas do usuário: ${userUid}`);
     
