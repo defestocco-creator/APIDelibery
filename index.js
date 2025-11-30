@@ -120,34 +120,55 @@ async function saveUserMetric(userId, metricData) {
 // =========================================================
 function createMetricsMiddleware() {
   return async (req, res, next) => {
-    const start = Date.now();
-    const userId = req.user?.uid;
+    const start = process.hrtime.bigint(); // ⬅ latência precisa (ns)
 
-    const saveMetric = async () => {
-      try {
-        if (!userId) return;
+    // Capturar tamanho do request
+    let requestSize = 0;
+    req.on("data", chunk => requestSize += chunk.length);
 
-        const metric = {
-          method: req.method,
-          endpoint: req.originalUrl,
-          statusCode: res.statusCode,
-          responseTime: Date.now() - start,
-          timestamp: new Date().toISOString(),
-          userAgent: req.get('User-Agent') || 'unknown'
-        };
+    // Após resposta
+    res.on("finish", async () => {
+      const end = process.hrtime.bigint();
+      const responseTimeMs = Number(end - start) / 1_000_000; // ns → ms
 
-        await saveUserMetric(userId, metric);
-        console.log(`📊 [${userId}] ${req.method} ${req.originalUrl} → ${res.statusCode} (${metric.responseTime}ms)`);
-        
-      } catch (error) {
-        console.error("❌ Erro ao salvar métrica:", error.message);
-      }
-    };
+      const userId = req.user?.uid;
+      if (!userId) return;
 
-    res.on('finish', saveMetric);
+      // Tamanho da resposta
+      const responseBody = res.getHeader("Content-Length") || 0;
+
+      const metric = {
+        method: req.method,
+        endpoint: req.originalUrl,
+
+        // Latência
+        responseTimeMs,
+        serverProcessingMs: responseTimeMs, // dividido depois se quiser
+
+        // Tamanho
+        requestSizeBytes: requestSize,
+        responseSizeBytes: Number(responseBody),
+
+        // Original
+        statusCode: res.statusCode,
+        userAgent: req.get('User-Agent') || "unknown",
+        ip: req.ip || req.headers['x-forwarded-for'] || "unknown",
+
+        // Carimbos de tempo
+        timestampMs: Date.now(),
+        timestampISO: new Date().toISOString(),
+        minuteBucket: new Date().toISOString().slice(0, 16), // "2025-11-29T03:47"
+        hourBucket: new Date().toISOString().slice(0, 13),   // "2025-11-29T03"
+        dayBucket: new Date().toISOString().slice(0, 10),    // "2025-11-29"
+      };
+
+      await saveUserMetric(userId, metric);
+    });
+
     next();
   };
 }
+
 
 // =========================================================
 //   JWT Middleware
